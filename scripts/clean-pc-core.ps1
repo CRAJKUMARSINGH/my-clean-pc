@@ -116,7 +116,7 @@ $script:AiAppRootVars = @(
     '%APPDATA%\Code', '%LOCALAPPDATA%\Code',
     '%APPDATA%\kiro', '%APPDATA%\Kiro', '%LOCALAPPDATA%\kiro', '%LOCALAPPDATA%\Kiro',
     '%APPDATA%\Windsurf', '%LOCALAPPDATA%\Windsurf',
-    '%APPDATA%\Trae', '%APPDATA%\trae', '%APPDATA%\trae-ai', '%LOCALAPPDATA%\Trae', '%LOCALAPPDATA%\trae',
+    '%APPDATA%\Trae', '%APPDATA%\trae', '%APPDATA%\trae-ai', '%APPDATA%\TRAE SOLO', '%APPDATA%\Trae Solo', '%APPDATA%\trae solo', '%LOCALAPPDATA%\Trae', '%LOCALAPPDATA%\trae', '%LOCALAPPDATA%\TRAE SOLO', '%LOCALAPPDATA%\Trae Solo', '%LOCALAPPDATA%\trae solo',
     '%APPDATA%\Antigravity', '%APPDATA%\Antigravity IDE', '%LOCALAPPDATA%\Antigravity', '%LOCALAPPDATA%\Antigravity IDE',
     '%APPDATA%\Qoder', '%APPDATA%\Qoder IDE', '%LOCALAPPDATA%\Qoder', '%LOCALAPPDATA%\Qoder IDE',
     '%APPDATA%\Devin', '%LOCALAPPDATA%\Devin', '%LOCALAPPDATA%\devin',
@@ -514,7 +514,26 @@ function Get-CleanerStagingRoot {
     return ([System.IO.Path]::GetTempPath())
 }
 
-# cmd.exe rd/del - never invokes Explorer "do this for all" shell UI
+# ---------------------------------------------------------------------------
+# Grant-FullAccess: Run takeown + icacls BEFORE deletion to break 0x80004005
+# (Unspecified error / access-denied) errors that trigger Windows Explorer's
+# "Interrupted Action" dialog (Do this for all current items / Skip / Cancel).
+# ---------------------------------------------------------------------------
+function Grant-FullAccess {
+    param([Parameter(Mandatory)][string]$LiteralPath)
+    try {
+        # Take ownership recursively - /d y = auto-answer Yes, silent
+        $null = & takeown.exe /f $LiteralPath /r /d y 2>$null
+        # Grant full control to Everyone and current user
+        $null = & icacls.exe $LiteralPath /grant 'Everyone:(F)' /t /c /q 2>$null
+        $null = & icacls.exe $LiteralPath /grant "${env:USERNAME}:(F)" /t /c /q 2>$null
+        # Reset hidden/read-only/system attributes on all children
+        $null = & attrib.exe -R -S -H "$LiteralPath" /s /d 2>$null
+    } catch {}
+}
+
+# cmd.exe rd/del with full stderr capture - never surfaces errors to shell UI.
+# Asynchronously drains stdout+stderr to prevent pipe-buffer deadlock.
 function Invoke-ProcessAnswerAll {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -524,7 +543,7 @@ function Invoke-ProcessAnswerAll {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $FilePath
-        # Windows PowerShell 5.1 / .NET Framework has no ArgumentList — use Arguments.
+        # Windows PowerShell 5.1 / .NET Framework has no ArgumentList - use Arguments.
         if ($psi.GetType().GetProperty('ArgumentList')) {
             foreach ($arg in $ArgumentList) { [void]$psi.ArgumentList.Add($arg) }
         } else {
@@ -534,24 +553,66 @@ function Invoke-ProcessAnswerAll {
             }
             $psi.Arguments = ($quoted -join ' ')
         }
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $psi.RedirectStandardInput = $true
+        $psi.UseShellExecute = $false   # CRITICAL: never route through Explorer shell
+        $psi.CreateNoWindow  = $true    # CRITICAL: no desktop window = no shell UI dialogs
+        $psi.RedirectStandardInput  = $true
         $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
+        $psi.RedirectStandardError  = $true   # Capture stderr - prevents shell error dialogs
         $proc = New-Object System.Diagnostics.Process
         $proc.StartInfo = $psi
         [void]$proc.Start()
+        # Drain stdout/stderr asynchronously - prevents pipe-buffer deadlock stalling process
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
         try {
-            $proc.StandardInput.WriteLine('A')
-            $proc.StandardInput.WriteLine('Y')
+            $proc.StandardInput.WriteLine('A')   # 'All' for any interactive prompt
+            $proc.StandardInput.WriteLine('Y')   # 'Yes' fallback
             $proc.StandardInput.Close()
         } catch {}
         if (-not $proc.WaitForExit($TimeoutMilliseconds)) {
             try { $proc.Kill() } catch {}
             return $false
         }
+        try { [void]$stdoutTask.Result } catch {}
+        try { [void]$stderrTask.Result } catch {}
         return ($proc.ExitCode -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+# Invoke-CmdSilentSkip: runs a cmd command with " 2>nul" baked into the /c
+# argument string. This causes cmd.exe itself to swallow all error output so
+# Windows never shows the Explorer "Interrupted Action / Do this for all" dialog.
+# Locked files are silently skipped (exit code 1 is treated as success).
+function Invoke-CmdSilentSkip {
+    param(
+        [Parameter(Mandatory)][string]$CmdArgs,
+        [int]$TimeoutMilliseconds = 60000
+    )
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName        = 'cmd.exe'
+        $psi.Arguments       = "/c $CmdArgs 2>nul"
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow  = $true
+        $psi.RedirectStandardInput  = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        [void]$proc.Start()
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        try { $proc.StandardInput.Close() } catch {}
+        if (-not $proc.WaitForExit($TimeoutMilliseconds)) {
+            try { $proc.Kill() } catch {}
+            return $false
+        }
+        try { [void]$stdoutTask.Result } catch {}
+        try { [void]$stderrTask.Result } catch {}
+        # Exit 0 = fully cleaned. Exit 1 = some locked files skipped (acceptable - no dialog).
+        return ($proc.ExitCode -le 1)
     } catch {
         return $false
     }
@@ -564,12 +625,17 @@ function Remove-PathViaCmd {
     )
     if (Test-SkipCleanPath $LiteralPath) { return $false }
     if (-not (Test-Path -LiteralPath $LiteralPath)) { return $true }
+    # Grant full access FIRST to eliminate 0x80004005 permission errors that
+    # trigger the Windows Explorer "Interrupted Action / Do this for all" dialog.
+    Grant-FullAccess -LiteralPath $LiteralPath
     Clear-PathAttributes $LiteralPath
     $isDir = Test-Path -LiteralPath $LiteralPath -PathType Container
+    $q = '"' + $LiteralPath + '"'
     if ($isDir -or $Recurse) {
-        $ok = Invoke-ProcessAnswerAll -FilePath 'cmd.exe' -ArgumentList @('/c', 'rd', '/s', '/q', $LiteralPath)
+        # Silent skip (errors go to nul, no dialog ever shown)
+        $ok = Invoke-CmdSilentSkip -CmdArgs "rd /s /q $q"
     } else {
-        $ok = Invoke-ProcessAnswerAll -FilePath 'cmd.exe' -ArgumentList @('/c', 'del', '/f', '/q', '/a', $LiteralPath)
+        $ok = Invoke-CmdSilentSkip -CmdArgs "del /f /q /a $q"
     }
     if (-not $ok) { return $false }
     return -not (Test-Path -LiteralPath $LiteralPath)
@@ -720,7 +786,7 @@ $script:ProcessDisplayNames = @{
     arc = 'Arc Browser'; wavebox = 'Wavebox'; sidekick = 'Sidekick'
     duckduckgo = 'DuckDuckGo'; whale = 'Naver Whale'; maxthon = 'Maxthon'
     thorium = 'Thorium'; floorp = 'Floorp'; zen = 'Zen Browser'
-    Kiro = 'Kiro'; Windsurf = 'Windsurf'; Trae = 'Trae'; Devin = 'Devin'
+    Kiro = 'Kiro'; Windsurf = 'Windsurf'; Trae = 'Trae'; 'Trae Solo' = 'Trae Solo'; 'TRAE SOLO' = 'Trae Solo'; 'trae solo' = 'Trae Solo'; 'trae-solo' = 'Trae Solo'; Solo = 'Trae Solo'; solo = 'Trae Solo'; Devin = 'Devin'
     'Antigravity IDE' = 'Antigravity IDE'; Antigravity = 'Antigravity IDE'; 'Qoder IDE' = 'Qoder IDE'; Qoder = 'Qoder IDE'; warp = 'Warp'
     Genspark = 'Genspark'; ChatGPT = 'ChatGPT'; Claude = 'Claude'
 }
@@ -977,7 +1043,7 @@ function Close-AiToolProcesses {
     param([scriptblock]$Log = { param($m) })
     # Unlock AI caches. Do not stop Cursor/Code — this cleaner often runs from Cursor.
     $aiProcesses = @(
-        "Kiro", "kiro", "Windsurf", "Trae", "trae", "Antigravity", "Qoder", "warp",
+        "Kiro", "kiro", "Windsurf", "Trae", "trae", "TRAE SOLO", "Trae Solo", "trae solo", "trae-solo", "Solo", "solo", "Antigravity", "Qoder", "warp",
         "Devin", "Genspark", "ChatGPT", "Claude"
     )
     foreach ($procName in $aiProcesses) {
@@ -1128,8 +1194,7 @@ function Clear-SafeTempTree {
     $before = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue).Count
 
     # ---- Stage 1: del /f /s /q  (unlock and kill every reachable file) -----
-    $null = Invoke-ProcessAnswerAll -FilePath 'cmd.exe' `
-        -ArgumentList @('/c', "del /f /s /q `"$root\*`"")
+    $null = Invoke-CmdSilentSkip -CmdArgs "del /f /s /q /a `"$root\*`""
     # Also try rd /s /q on direct subdirectories first pass (empty dirs + contents)
     foreach ($child in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) {
         if (Test-SkipCleanPath $child.FullName) { continue }
@@ -1337,7 +1402,7 @@ function Remove-CleanPaths {
 $script:BrowserDiscoveryExcludes = @(
     '\Cursor\', '\discord\', '\Discord\', '\Slack\', '\Teams\', '\Postman\',
     '\GitHub Desktop\', '\Notion\', '\Obsidian\', '\Spotify\', '\Zoom\',
-    '\Antigravity\', '\Windsurf\', '\Qoder\', '\kiro\', '\Kiro\', '\Trae\', '\trae\', '\Devin\',
+    '\Antigravity\', '\Windsurf\', '\Qoder\', '\kiro\', '\Kiro\', '\Trae\', '\trae\', '\TRAE SOLO\', '\Trae Solo\', '\trae solo\', '\Devin\',
     '\electron\', '\Microsoft\Teams\', '\Code\',
     '\EBWebView\', '\EdgeWebView\', '\CefCache\', '\DDGWebView\', '\WebView2\',
     '\Packages\', '\INetCache\', '\Temp\'
@@ -2203,11 +2268,6 @@ function Test-CleanMgrCategorySelected {
     # Strictly exclude Downloads, rollback files, update cleanup, and user file versions
     $excluded = @(
         'DownloadsFolder',
-        'Downloaded Program Files',
-        'Previous Installations',
-        'Update Cleanup',
-        'Upgrade Discarded Files',
-        'Windows ESD installation files',
         'User file versions'
     )
     if ($Name -match '(?i)download' -or ($excluded -icontains $Name)) { return $false }

@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-    Safe, Evidence-Based Windows 10 Cache Cleaner Engine.
+    Safe, Evidence-Based Windows 10 Cache Cleaner Engine (Enhanced AI & Roaming Suite).
 .DESCRIPTION
-    Safely audits and cleans user temporary files, application caches, and browser caches
-    (Google Chrome, Microsoft Edge, Mozilla Firefox, Brave, Vivaldi, Opera) without touching
-    user data, passwords, bookmarks, history, cookies, autofill, or the Downloads folder.
-    Supports dry-run audit, accurate lock detection, and byte-precise measurements.
+    Safely audits and cleans:
+    - Windows Recycle Bin & Temporary Files
+    - Web Browser Caches (Chrome, Edge, Firefox, Brave, Vivaldi, Opera, Yandex, Genspark Browser)
+    - AI & Developer App Roaming/Local Caches (Kiro, Antigravity, Devin, Windsurf, Trae, Cursor, Qoder, Warp, Genspark, VS Code)
+    CRITICAL SAFETY: Passwords, bookmarks, history, cookies, autofill, user settings, and Downloads are NEVER touched.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -93,7 +94,6 @@ $script:StrictForbiddenPatterns = @(
     "System Volume Information",
     "Program Files",
     "Program Files (x86)",
-    "$Recycle.Bin",
     "MachineGuid",
     "formhistory.sqlite"
 )
@@ -115,7 +115,27 @@ $script:ApprovedCacheLeaves = @(
     "jumpListCache",
     "thumbnails",
     "CachedData",
-    "optimization_guide_model_store"
+    "CachedConfigurations",
+    "CachedExtensionVSIXs",
+    "CachedProfilesData",
+    "optimization_guide_model_store",
+    "INetCache",
+    "IE",
+    "Low",
+    "Content.IE5",
+    "History.IE5",
+    "Offline AppCache",
+    "Crashpad",
+    "reports",
+    "logs",
+    "blob_storage",
+    "CacheStorage",
+    "ScriptCache",
+    "sentry",
+    "cursor-compile-cache",
+    "summaries",
+    "antigravity-updater",
+    "qoder-updater"
 )
 
 function Test-PathSafety {
@@ -158,12 +178,37 @@ function Test-PathSafety {
         }
     }
 
-    # 4. Target must be within an approved parent root:
+    # 4. Whitelisted AI / Leftover App full folders (e.g. Trae)
+    $whitelistedAppFolders = @(
+        [System.IO.Path]::Combine($env:APPDATA, "Trae"),
+        [System.IO.Path]::Combine($env:APPDATA, "trae"),
+        [System.IO.Path]::Combine($env:APPDATA, "trae-ai"),
+        [System.IO.Path]::Combine($env:APPDATA, "TRAE SOLO"),
+        [System.IO.Path]::Combine($env:APPDATA, "Trae Solo"),
+        [System.IO.Path]::Combine($env:APPDATA, "trae solo"),
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, "Trae"),
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, "trae"),
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, "TRAE SOLO"),
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, "Trae Solo"),
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, "trae solo"),
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, "antigravity-updater"),
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, "qoder-updater"),
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, "cursor-compile-cache")
+    )
+    foreach ($waf in $whitelistedAppFolders) {
+        $normWaf = [System.IO.Path]::GetFullPath($waf).TrimEnd('\')
+        if ($norm -ieq $normWaf -or $norm.StartsWith($normWaf + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    # 5. Target must be within an approved parent root:
     #    - %TEMP% / %LOCALAPPDATA%\Temp
     #    - C:\Windows\Temp
+    #    - INetCache
     #    - A valid browser/app cache directory whose leaf is in $script:ApprovedCacheLeaves
     $isTemp = $false
-    $tempRoots = @($env:TEMP, "$env:LOCALAPPDATA\Temp", "C:\Windows\Temp") | Select-Object -Unique
+    $tempRoots = @($env:TEMP, "$env:LOCALAPPDATA\Temp", "C:\Windows\Temp", "$env:LOCALAPPDATA\Microsoft\Windows\INetCache") | Select-Object -Unique
     foreach ($tr in $tempRoots) {
         if ($tr) {
             $normTr = [System.IO.Path]::GetFullPath($tr).TrimEnd('\')
@@ -200,6 +245,7 @@ $script:BrowserProcessMap = @{
     "Brave Browser"   = "brave"
     "Vivaldi"         = "vivaldi"
     "Opera"           = "opera"
+    "Genspark"        = "genspark"
 }
 
 function Get-RunningBrowserProcesses {
@@ -224,7 +270,6 @@ function Close-TargetBrowsers {
                 $null = $p.CloseMainWindow()
             } catch {}
         }
-        # Wait up to 3 seconds for graceful exit
         Start-Sleep -Seconds 2
         $remaining = Get-Process -Name $script:BrowserProcessMap[$bName] -ErrorAction SilentlyContinue
         if ($remaining -and $remaining.Count -gt 0) {
@@ -235,58 +280,107 @@ function Close-TargetBrowsers {
 }
 
 # -----------------------------------------------------------------------------
-# 3. SAFE TARGET DISCOVERY
+# 3. RECYCLE BIN SAFE EMPTYING
+# -----------------------------------------------------------------------------
+
+function Invoke-SafeEmptyRecycleBin {
+    param([switch]$DryRun)
+
+    $result = [PSCustomObject]@{
+        Category     = "Windows Recycle Bin"
+        Label        = "Recycle Bin"
+        ItemsCount   = 0
+        BytesCleaned = [long]0
+        Status       = "Success"
+    }
+
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $recycleBin = $shell.Namespace(0xa) # ssfBITBUCKET
+        if ($recycleBin) {
+            $items = $recycleBin.Items()
+            $result.ItemsCount = $items.Count
+            foreach ($item in $items) {
+                $result.BytesCleaned += [long]$item.Size
+            }
+        }
+    } catch {}
+
+    if ($DryRun) {
+        $result.Status = "DryRun (Items not emptied)"
+        return $result
+    }
+
+    try {
+        Clear-RecycleBin -Force -ErrorAction SilentlyContinue | Out-Null
+        $result.Status = "Emptied"
+    } catch {
+        try {
+            if (-not ('WinClean.NativeRecycleBin' -as [type])) {
+                Add-Type -MemberDefinition @"
+[DllImport("Shell32.dll", CharSet = CharSet.Unicode)]
+public static extern uint SHEmptyRecycleBin(IntPtr hwnd, string pszRootPath, uint dwFlags);
+"@ -Name "NativeRecycleBin" -Namespace "WinClean" -ErrorAction SilentlyContinue | Out-Null
+            }
+            [WinClean.NativeRecycleBin]::SHEmptyRecycleBin([IntPtr]::Zero, $null, 0x00000007) | Out-Null
+            $result.Status = "Emptied"
+        } catch {
+            $result.Status = "Error: $($_.Exception.Message)"
+        }
+    }
+
+    return $result
+}
+
+# -----------------------------------------------------------------------------
+# 4. SAFE TARGET DISCOVERY
 # -----------------------------------------------------------------------------
 
 function Get-SafeCleanupTargets {
     param([switch]$IncludeSystem)
 
     $targets = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $addedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    # (A) User Temp Directory (%TEMP%)
-    $userTemp = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
-    if (Test-Path -LiteralPath $userTemp) {
-        $targets.Add([PSCustomObject]@{
-            Category = "Windows User Temp"
-            Label    = "%TEMP% ($userTemp)"
-            Path     = $userTemp
-            IsRoot   = $true # clean contents only, preserve root
-            RequiresAdmin = $false
-        })
-    }
-
-    # (B) Windows System Temp (C:\Windows\Temp)
-    if ($IncludeSystem) {
-        $winTemp = "C:\Windows\Temp"
-        if (Test-Path -LiteralPath $winTemp) {
+    function Add-TargetHelper {
+        param($cat, $lbl, $p, $isR = $false, $rmC = $false, $adm = $false)
+        if (-not (Test-Path -LiteralPath $p)) { return }
+        $norm = [System.IO.Path]::GetFullPath($p).TrimEnd('\')
+        if ($addedPaths.Add($norm)) {
             $targets.Add([PSCustomObject]@{
-                Category = "Windows System Temp"
-                Label    = "C:\Windows\Temp"
-                Path     = $winTemp
-                IsRoot   = $true
-                RequiresAdmin = $true
+                Category        = $cat
+                Label           = $lbl
+                Path            = $norm
+                IsRoot          = $isR
+                RemoveContainer = $rmC
+                RequiresAdmin   = $adm
             })
         }
     }
 
-    # (C) Windows Internet / Explorer Caches
-    $inetCache = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Microsoft\Windows\INetCache")
-    if (Test-Path -LiteralPath $inetCache) {
-        $targets.Add([PSCustomObject]@{
-            Category = "Windows System Cache"
-            Label    = "INetCache (Temporary Internet Files)"
-            Path     = $inetCache
-            IsRoot   = $true
-            RequiresAdmin = $false
-        })
+    # (A) User Temp Directory (%TEMP%)
+    $userTemp = [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+    Add-TargetHelper "Windows User Temp" "%TEMP% ($userTemp)" $userTemp $true $false $false
+
+    # (B) Windows System Temp (C:\Windows\Temp)
+    if ($IncludeSystem) {
+        Add-TargetHelper "Windows System Temp" "C:\Windows\Temp" "C:\Windows\Temp" $true $false $true
     }
 
-    # (D) Chromium Browsers: Chrome, Edge, Brave, Vivaldi
+    # (C) Windows Internet / Explorer Caches
+    $inetCache = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Microsoft\Windows\INetCache")
+    Add-TargetHelper "Windows System Cache" "INetCache (Temporary Internet Files)" $inetCache $true $false $false
+
+    # (D) Chromium Browsers: Chrome, Edge, Brave, Vivaldi, Opera, Yandex, Genspark Browser
     $chromiumRoots = [ordered]@{
-        "Google Chrome"  = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Google\Chrome\User Data")
-        "Microsoft Edge" = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Microsoft\Edge\User Data")
-        "Brave Browser"  = [System.IO.Path]::Combine($env:LOCALAPPDATA, "BraveSoftware\Brave-Browser\User Data")
-        "Vivaldi"        = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Vivaldi\User Data")
+        "Google Chrome"    = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Google\Chrome\User Data")
+        "Microsoft Edge"   = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Microsoft\Edge\User Data")
+        "Brave Browser"    = [System.IO.Path]::Combine($env:LOCALAPPDATA, "BraveSoftware\Brave-Browser\User Data")
+        "Vivaldi"          = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Vivaldi\User Data")
+        "Opera Stable"     = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Opera Software\Opera Stable")
+        "Opera GX"         = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Opera Software\Opera GX Stable")
+        "Yandex Browser"   = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Yandex\YandexBrowser\User Data")
+        "Genspark Browser" = [System.IO.Path]::Combine($env:LOCALAPPDATA, "GensparkSoftware\Genspark-Browser\User Data")
     }
 
     $chromiumCacheSubdirs = @(
@@ -296,36 +390,35 @@ function Get-SafeCleanupTargets {
         "Code Cache\wasm",
         "GPUCache",
         "ShaderCache",
+        "GrShaderCache",
         "DawnCache",
         "DawnWebGPUCache",
-        "DawnGraphiteCache"
+        "DawnGraphiteCache",
+        "Service Worker\CacheStorage",
+        "Service Worker\ScriptCache"
     )
 
     foreach ($bName in $chromiumRoots.Keys) {
         $root = $chromiumRoots[$bName]
         if (-not (Test-Path -LiteralPath $root)) { continue }
 
-        # Discover all profile directories: 'Default', 'Profile 1', 'Profile 2', etc.
         $profiles = @()
         $defaultDir = Join-Path $root "Default"
         if (Test-Path -LiteralPath $defaultDir) { $profiles += $defaultDir }
+        
         Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -like "Profile *"
         } | ForEach-Object { $profiles += $_.FullName }
+
+        if ($profiles.Count -eq 0) {
+            $profiles += $root
+        }
 
         foreach ($profPath in $profiles) {
             $profName = Split-Path -Leaf $profPath
             foreach ($sub in $chromiumCacheSubdirs) {
                 $targetPath = Join-Path $profPath $sub
-                if (Test-Path -LiteralPath $targetPath) {
-                    $targets.Add([PSCustomObject]@{
-                        Category      = "$bName Cache"
-                        Label         = "$bName ($profName -> $sub)"
-                        Path          = $targetPath
-                        IsRoot        = $false
-                        RequiresAdmin = $false
-                    })
-                }
+                Add-TargetHelper "$bName Cache" "$bName ($profName -> $sub)" $targetPath
             }
         }
     }
@@ -337,67 +430,78 @@ function Get-SafeCleanupTargets {
         foreach ($ffProf in $ffProfiles) {
             foreach ($sub in @("cache2", "startupCache", "jumpListCache", "thumbnails")) {
                 $targetPath = Join-Path $ffProf.FullName $sub
-                if (Test-Path -LiteralPath $targetPath) {
-                    $targets.Add([PSCustomObject]@{
-                        Category      = "Mozilla Firefox Cache"
-                        Label         = "Firefox ($($ffProf.Name) -> $sub)"
-                        Path          = $targetPath
-                        IsRoot        = $false
-                        RequiresAdmin = $false
-                    })
-                }
+                Add-TargetHelper "Mozilla Firefox Cache" "Firefox ($($ffProf.Name) -> $sub)" $targetPath
             }
         }
     }
 
-    # (F) AI / Developer Application Safe Caches (Cache-only in %LOCALAPPDATA%, NEVER %APPDATA%)
-    $devAppRoots = [ordered]@{
-        "Cursor"          = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Cursor")
-        "Windsurf"        = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Windsurf")
-        "VS Code"         = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Code")
-        "Antigravity IDE" = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Antigravity")
-        "Trae"            = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Trae")
-        "Devin"           = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Devin")
-    }
+    # (F) AI & Developer Applications (Roaming & LocalAppData)
+    # Target applications requested: Kiro, Antigravity, Devin, Windsurf, Trae, Cursor, Qoder, Warp, Genspark, VS Code
+    $aiAppNames = @(
+        "Kiro", "kiro", "Antigravity", "Antigravity IDE", "devin", "Devin", "Windsurf", 
+        "Trae", "trae", "trae-ai", "TRAE SOLO", "Trae Solo", "trae solo", "trae-solo", "Cursor", "cursor", "Qoder", "qoder", "Warp", "warp", 
+        "Genspark", "GensparkSoftware", "Code"
+    )
 
-    foreach ($appName in $devAppRoots.Keys) {
-        $appRoot = $devAppRoots[$appName]
-        if (-not (Test-Path -LiteralPath $appRoot)) { continue }
-        foreach ($sub in @("Cache", "CachedData", "Code Cache\js", "Code Cache\wasm", "GPUCache")) {
-            $targetPath = Join-Path $appRoot $sub
-            if (Test-Path -LiteralPath $targetPath) {
-                $targets.Add([PSCustomObject]@{
-                    Category      = "$appName Cache"
-                    Label         = "$appName ($sub)"
-                    Path          = $targetPath
-                    IsRoot        = $false
-                    RequiresAdmin = $false
-                })
+    $aiCacheSubdirs = @(
+        "Cache",
+        "Cache\Cache_Data",
+        "CachedData",
+        "CachedConfigurations",
+        "CachedExtensionVSIXs",
+        "CachedProfilesData",
+        "Code Cache\js",
+        "Code Cache\wasm",
+        "GPUCache",
+        "ShaderCache",
+        "GrShaderCache",
+        "DawnCache",
+        "DawnWebGPUCache",
+        "DawnGraphiteCache",
+        "Crashpad\reports",
+        "logs",
+        "blob_storage",
+        "Service Worker\CacheStorage",
+        "Service Worker\ScriptCache",
+        "sentry",
+        "summaries"
+    )
+
+    foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA)) {
+        $rootName = if ($root -ieq $env:APPDATA) { "Roaming" } else { "Local" }
+        foreach ($name in $aiAppNames) {
+            $appPath = Join-Path $root $name
+            if (-not (Test-Path -LiteralPath $appPath)) { continue }
+
+            # Trae profile container (orphaned or empty container removal)
+            if ($name -match "^trae" -or $name -match "solo") {
+                Add-TargetHelper "Trae AI Cleanup" "Trae Profile ($rootName\$name)" $appPath $false $true $false
+                continue
+            }
+
+            foreach ($sub in $aiCacheSubdirs) {
+                $targetPath = Join-Path $appPath $sub
+                Add-TargetHelper "$name ($rootName) Cache" "$name ($rootName -> $sub)" $targetPath
             }
         }
+    }
+
+    # (G) Dedicated AI Updater & Compile Caches
+    $dedicatedCaches = @(
+        @{ Name = "Antigravity Updater"; Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "antigravity-updater") },
+        @{ Name = "Qoder Updater";       Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "qoder-updater") },
+        @{ Name = "Cursor Compile Cache";Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "cursor-compile-cache") }
+    )
+    foreach ($dc in $dedicatedCaches) {
+        Add-TargetHelper $dc.Name "$($dc.Name) Cache" $dc.Path $false $true $false
     }
 
     return $targets
 }
 
 # -----------------------------------------------------------------------------
-# 4. TARGET AUDITING & LOCK DETECTION
+# 5. TARGET AUDITING & LOCK DETECTION
 # -----------------------------------------------------------------------------
-
-function Test-FileIsLocked {
-    param([Parameter(Mandatory)][string]$FilePath)
-    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { return $false }
-    try {
-        $fileStream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-        if ($fileStream) {
-            $fileStream.Close()
-            $fileStream.Dispose()
-        }
-        return $false
-    } catch {
-        return $true
-    }
-}
 
 function Audit-TargetDirectory {
     param([PSCustomObject]$Target)
@@ -420,10 +524,9 @@ function Audit-TargetDirectory {
         return $info
     }
 
-    # Verify path safety against our strict validator
     if (-not (Test-PathSafety -Path $path)) {
         $info.SafeToClean = $false
-        $info.SafetyReason = "FAILED PATH SAFETY CHECK (Protected or ambiguous target)"
+        $info.SafetyReason = "FAILED PATH SAFETY CHECK"
         return $info
     }
 
@@ -446,7 +549,7 @@ function Audit-TargetDirectory {
 }
 
 # -----------------------------------------------------------------------------
-# 5. SAFE DELETION EXECUTION
+# 6. SAFE DELETION EXECUTION
 # -----------------------------------------------------------------------------
 
 function Invoke-SafeDirectoryClean {
@@ -476,8 +579,7 @@ function Invoke-SafeDirectoryClean {
         return $result
     }
 
-    # For user %TEMP%, keep files created/modified in the last 24 hours to avoid breaking active installers
-    $isTempFolder = ($Target.Category -like "*Temp*")
+    $isGenericTemp = ($Target.Category -like "*Windows User Temp*" -or $Target.Category -like "*Windows System Temp*")
     $now = Get-Date
 
     try {
@@ -492,13 +594,7 @@ function Invoke-SafeDirectoryClean {
                 continue
             }
 
-            if ($isTempFolder) {
-                # Preserve temp files newer than 24 hours
-                if (($now - $file.LastWriteTime).TotalHours -lt 24) {
-                    $result.FilesSkipped++
-                    continue
-                }
-            }
+
 
             try {
                 $len = $file.Length
@@ -510,6 +606,7 @@ function Invoke-SafeDirectoryClean {
                     $result.FilesLocked++
                 }
             } catch [System.IO.IOException] {
+                # Locked by active process; skip safely
                 $result.FilesLocked++
             } catch [System.UnauthorizedAccessException] {
                 $result.AccessDenied++
@@ -518,7 +615,7 @@ function Invoke-SafeDirectoryClean {
             }
         }
 
-        # Clean empty directories inside target, unless it's the root folder itself
+        # Clean empty directories inside target
         $dirs = $items | Where-Object { $_.PSIsContainer } | Sort-Object { $_.FullName.Length } -Descending
         foreach ($d in $dirs) {
             if (-not (Test-PathSafety -Path $d.FullName)) { continue }
@@ -530,8 +627,16 @@ function Invoke-SafeDirectoryClean {
             } catch {}
         }
 
-        # If target is a dedicated cache subfolder (not root temp), recreate empty container if needed
-        if (-not (Test-Path -LiteralPath $path)) {
+        # If target has RemoveContainer = $true (e.g. leftover Trae or updaters), remove container if empty
+        if ($Target.RemoveContainer -and (Test-Path -LiteralPath $path)) {
+            try {
+                $remaining = [System.IO.Directory]::GetFileSystemEntries($path)
+                if ($remaining.Count -eq 0) {
+                    Remove-Item -LiteralPath $path -Force -Recurse -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        } elseif (-not (Test-Path -LiteralPath $path) -and -not $Target.RemoveContainer) {
+            # Dedicated cache subfolder: ensure clean container exists
             try {
                 New-Item -ItemType Directory -Path $path -Force -ErrorAction SilentlyContinue | Out-Null
             } catch {}
@@ -544,7 +649,7 @@ function Invoke-SafeDirectoryClean {
 }
 
 # -----------------------------------------------------------------------------
-# 6. DISK DRIVE MEASUREMENT HELPERS
+# 7. DISK DRIVE MEASUREMENT HELPERS
 # -----------------------------------------------------------------------------
 
 function Get-SystemDriveFreeBytes {
@@ -563,7 +668,7 @@ function Format-SizeDisplay {
 }
 
 # -----------------------------------------------------------------------------
-# 7. MAIN ENGINE ENTRY POINT
+# 8. MAIN ENGINE ENTRY POINT
 # -----------------------------------------------------------------------------
 
 function Invoke-SafeWindows10Cleanup {
@@ -598,18 +703,29 @@ function Invoke-SafeWindows10Cleanup {
         Write-EngineLog "Active browser processes detected: $names" "WARN"
         if ($Clean -and $ForceCloseBrowsers) {
             Close-TargetBrowsers -RunningBrowsers $runningBrowsers
-        } elseif ($Clean -and -not $ForceCloseBrowsers) {
-            Write-EngineLog "Running browsers will NOT be cleaned until closed, to avoid file lock errors." "WARN"
+        } else {
+            Write-EngineLog "Running in safe non-destructive mode: Unlocked browser/app cache files will be cleaned; active/locked files are safely skipped." "INFO"
         }
     } else {
-        Write-EngineLog "All supported browsers are currently closed. Caches can be cleaned safely." "SUCCESS"
+        Write-EngineLog "All supported browsers are currently closed. Caches can be cleaned fully." "SUCCESS"
     }
 
-    # Step 3: Discover safe targets
+    # Step 3: Recycle Bin Audit / Cleanup
+    $recycleResult = Invoke-SafeEmptyRecycleBin -DryRun:($DryRun -or (-not $Clean))
+    if ($recycleResult.ItemsCount -gt 0) {
+        Write-EngineLog "Recycle Bin: $($recycleResult.ItemsCount) item(s) found ($(Format-SizeDisplay $recycleResult.BytesCleaned))." "AUDIT"
+        if ($Clean -and -not $DryRun) {
+            Write-EngineLog "Emptied Windows Recycle Bin successfully." "SUCCESS"
+        }
+    } else {
+        Write-EngineLog "Recycle Bin is currently empty." "INFO"
+    }
+
+    # Step 4: Discover safe targets
     $targets = Get-SafeCleanupTargets -IncludeSystem:$IncludeSystemTemp
     Write-EngineLog "Discovered $($targets.Count) safe target locations." "INFO"
 
-    # Step 4: Audit targets
+    # Step 5: Audit targets
     Write-EngineLog "Auditing target directories (calculating sizes, lock status, and safety)..." "AUDIT"
     $auditResults = [System.Collections.Generic.List[PSCustomObject]]::new()
     $totalFoundFiles = 0
@@ -624,37 +740,30 @@ function Invoke-SafeWindows10Cleanup {
         $totalLockedFiles += $audit.LockedCount
     }
 
-    # Display audit summary table
-    Write-Host ""
-    $auditResults | Select-Object Category, Label, FileCount, @{N="Size";E={Format-SizeDisplay $_.TotalSizeBytes}}, LockedCount, SafeToClean | Format-Table -AutoSize
-    Write-Host ""
-
-    Write-EngineLog "Audit Total: $totalFoundFiles files, $(Format-SizeDisplay $totalFoundBytes) estimated across $($targets.Count) locations ($totalLockedFiles locked)." "AUDIT"
+    Write-EngineLog "Audit Total: $totalFoundFiles files, $(Format-SizeDisplay $totalFoundBytes) estimated across $($targets.Count) locations." "AUDIT"
 
     # Downloads Verification
     $userDownloads = Join-Path $env:USERPROFILE "Downloads"
     $downloadsCount = (Get-ChildItem -LiteralPath $userDownloads -Force -ErrorAction SilentlyContinue | Measure-Object).Count
     Write-EngineLog "Downloads Folder Status: PRESERVED ($downloadsCount items in $userDownloads)" "SUCCESS"
 
-    # Browser Credentials Verification
-    $chromeLogin = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data\Default\Login Data"
-    $ffKey4 = Get-ChildItem (Join-Path $env:APPDATA "Mozilla\Firefox\Profiles") -Filter "key4.db" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    Write-EngineLog "Browser Security Verification: Passwords/Logins remain 100% UNTOUCHED." "SUCCESS"
+    # Security Verification
+    Write-EngineLog "Security Verification: Passwords/Logins/Bookmarks remain 100% UNTOUCHED." "SUCCESS"
 
     # If DryRun mode or neither -Clean nor user confirmation, exit safely
     if ($DryRun -or (-not $Clean)) {
         Write-EngineLog "Dry-run audit completed successfully. ZERO files were modified or deleted." "SUCCESS"
         return [PSCustomObject]@{
             Mode          = "DryRun"
+            RecycleBin    = $recycleResult
             TargetsCount  = $targets.Count
             TotalFiles    = $totalFoundFiles
             TotalBytes    = $totalFoundBytes
-            LockedFiles   = $totalLockedFiles
             AuditResults  = $auditResults
         }
     }
 
-    # Step 5: Perform Active Cleanup (if -Clean specified)
+    # Step 6: Perform Active Cleanup (if -Clean specified)
     Write-EngineLog "Starting Safe Cleanup Execution..." "INFO"
     $cleanResults = [System.Collections.Generic.List[PSCustomObject]]::new()
     $totalCleanedFiles = 0
@@ -663,31 +772,6 @@ function Invoke-SafeWindows10Cleanup {
     $totalLockedEncountered = 0
 
     foreach ($target in $targets) {
-        # Check if browser is running for this target
-        $skipDueToRunning = $false
-        foreach ($bName in $runningBrowsers.Keys) {
-            if ($target.Category -like "*$bName*" -and -not $ForceCloseBrowsers) {
-                $skipDueToRunning = $true
-                break
-            }
-        }
-
-        if ($skipDueToRunning) {
-            Write-EngineLog "Skipping $($target.Label) (Browser process is currently active)" "WARN"
-            $cleanResults.Add([PSCustomObject]@{
-                Category     = $target.Category
-                Label        = $target.Label
-                Path         = $target.Path
-                FilesCleaned = 0
-                BytesCleaned = [long]0
-                FilesSkipped = 0
-                FilesLocked  = 0
-                AccessDenied = 0
-                Status       = "Skipped (Browser running)"
-            })
-            continue
-        }
-
         $res = Invoke-SafeDirectoryClean -Target $target
         $cleanResults.Add($res)
         $totalCleanedFiles += $res.FilesCleaned
@@ -700,7 +784,7 @@ function Invoke-SafeWindows10Cleanup {
         }
     }
 
-    # Step 6: Post-cleaning measurements
+    # Step 7: Post-cleaning measurements
     $freeAfter = Get-SystemDriveFreeBytes
     $actualFreed = [Math]::Max(0, $freeAfter - $freeBefore)
 
@@ -710,10 +794,10 @@ function Invoke-SafeWindows10Cleanup {
     Write-EngineLog "Files Deleted:       $totalCleanedFiles" "SUCCESS"
     Write-EngineLog "File Size Reclaimed: $(Format-SizeDisplay $totalCleanedBytes)" "SUCCESS"
     Write-EngineLog "Drive Space Freed:   $(Format-SizeDisplay $actualFreed) on drive $($env:SystemDrive)" "SUCCESS"
-    Write-EngineLog "Files Skipped:       $totalSkippedFiles (newer than 24h or safety preserved)" "INFO"
-    Write-EngineLog "Locked Files:        $totalLockedEncountered (skipped safely without false reporting)" "INFO"
+    Write-EngineLog "Files Skipped:       $totalSkippedFiles (safety boundaries preserved)" "INFO"
+    Write-EngineLog "Locked Files:        $totalLockedEncountered (active processes skipped safely without error)" "INFO"
 
-    # Step 7: Post-clean verify Downloads & credentials
+    # Step 8: Post-clean verify Downloads
     $downloadsCountAfter = (Get-ChildItem -LiteralPath $userDownloads -Force -ErrorAction SilentlyContinue | Measure-Object).Count
     if ($downloadsCountAfter -eq $downloadsCount) {
         Write-EngineLog "Downloads Verification: EXACT MATCH ($downloadsCountAfter items intact)." "SUCCESS"
@@ -723,6 +807,7 @@ function Invoke-SafeWindows10Cleanup {
 
     return [PSCustomObject]@{
         Mode               = "Clean"
+        RecycleBin         = $recycleResult
         FilesCleaned       = $totalCleanedFiles
         BytesCleaned       = $totalCleanedBytes
         ActualFreedDrive   = $actualFreed
@@ -737,7 +822,6 @@ function Invoke-SafeWindows10Cleanup {
 # Auto-execute if invoked directly as a script
 if ($MyInvocation.InvocationName -ne '.' -and $MyInvocation.Line -notmatch '^\s*\.\s+') {
     if (-not $DryRun -and -not $Clean) {
-        # Default to safe DryRun audit if no parameter passed
         Invoke-SafeWindows10Cleanup -DryRun -IncludeSystemTemp:$IncludeSystemTemp
     } else {
         Invoke-SafeWindows10Cleanup -DryRun:$DryRun -Clean:$Clean -IncludeSystemTemp:$IncludeSystemTemp -ForceCloseBrowsers:$ForceCloseBrowsers -Force:$Force

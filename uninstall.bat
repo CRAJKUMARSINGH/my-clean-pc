@@ -1,20 +1,16 @@
 @echo off
-:: My Clean PC - Uninstaller
-:: Right-click > Run as administrator
+title Uninstalling My Clean PC (Admin)
+cd /d "%~dp0"
 
 net session >nul 2>&1
-if %errorlevel% neq 0 (
-  echo ERROR: Run as administrator required.
-  exit /b 1
+if %errorLevel% neq 0 (
+    echo Requesting Administrator rights...
+    powershell -Command "Start-Process '%~f0' -Verb RunAs"
+    exit /b
 )
 
-:: Remove scheduled task
-schtasks /delete /tn "MyCleanPC" /f >nul 2>&1
-
-:: Remove installed files
-set "INSTALL_DIR=%LOCALAPPDATA%\MyCleanPC"
-if exist "%INSTALL_DIR%" rd /s /q "%INSTALL_DIR%"
-
-echo My Clean PC uninstalled. Scheduled task and files removed.
-exit /b 0
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall.ps1"
+echo.
+echo Press any key to exit...
+pause >nul
 

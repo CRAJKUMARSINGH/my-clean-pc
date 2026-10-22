@@ -75,7 +75,18 @@ function Start-GuardService {
             Write-Host "  service '$n' started" -ForegroundColor Green
         }
         catch {
-            Write-Warning "  could not start service '$n' (try an elevated shell): $($_.Exception.Message)"
+            try {
+                $argCmd = "Start-Service -Name '$n'"
+                Start-Process powershell.exe -ArgumentList @('-NoProfile', '-Command', $argCmd) -Verb RunAs -Wait
+                $svc.Refresh()
+                if ($svc.Status -eq 'Running') {
+                    Write-Host "  service '$n' started (elevated)" -ForegroundColor Green
+                } else {
+                    Write-Warning "  could not start service '$n' (try an elevated shell): $($_.Exception.Message)"
+                }
+            } catch {
+                Write-Warning "  could not start service '$n' (try an elevated shell): $($_.Exception.Message)"
+            }
         }
     }
 }
@@ -91,7 +102,11 @@ function Start-GuardApp {
         Write-Warning "  not found: $($Item.Exe)"
         return
     }
-    $p = Start-Process -FilePath $Item.Exe -ArgumentList $Item.Args -PassThru
+    $p = if ($Item.Args -and $Item.Args.Count -gt 0) {
+        Start-Process -FilePath $Item.Exe -ArgumentList $Item.Args -PassThru
+    } else {
+        Start-Process -FilePath $Item.Exe -PassThru
+    }
     if ($WaitForExit) { $p.WaitForExit() }
     else { Write-Host "  launched $($Item.Label)" -ForegroundColor Green }
 }

@@ -65,6 +65,35 @@ function Write-TempCleanerLog {
     }
 }
 
+# ---- On-Demand Startup Guard Helper -------------------------------------
+
+function Invoke-StartupGuard {
+    <#
+    .SYNOPSIS
+        Enforces on-demand startup for AnyDesk + Bentley from the core pipeline.
+    #>
+    [CmdletBinding()]
+    param(
+        [ValidateSet('Disable', 'Enable', 'Status')]
+        [string]$Action = 'Disable',
+        [scriptblock]$Log = $null
+    )
+
+    $guard = Join-Path $PSScriptRoot 'startup-guard.ps1'
+    if (-not (Test-Path -LiteralPath $guard)) {
+        $altGuard = Join-Path "$env:LOCALAPPDATA\MyCleanPC" 'startup-guard.ps1'
+        if (Test-Path -LiteralPath $altGuard) {
+            $guard = $altGuard
+        } else {
+            if ($Log) { & $Log "  [Startup Guard] startup-guard.ps1 not found - skipping." }
+            else { Write-Warning "startup-guard.ps1 not found - skipping." }
+            return
+        }
+    }
+    & $guard -Action $Action -Quiet
+    if ($Log) { & $Log "  [Startup Guard] On-demand policy enforced ($Action)." }
+}
+
 # ---- Space-freed helpers ------------------------------------------------
 
 function Format-ByteSize {
@@ -2540,6 +2569,10 @@ function Invoke-MyCleanPCCore {
     try { Clear-DnsClientCache -ErrorAction Stop } catch { ipconfig /flushdns | Out-Null }
     & $Log "  [DNS Cache] flushed."
     & $Log "  [Event Logs] Preserved intact for diagnostic integrity."
+
+    & $Log "-- STEP 8: On-Demand Startup Guard (AnyDesk + Bentley) --"
+    # keep AnyDesk / Bentley from coming back at logon
+    Invoke-StartupGuard -Action Disable -Log $Log
 
     # ---- Space-freed summary --------------------------------------------
     # Re-read drive free space and compute what was actually reclaimed.

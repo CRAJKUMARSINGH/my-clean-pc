@@ -3,15 +3,19 @@
 
 $ErrorActionPreference = "SilentlyContinue"
 
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")) {
-    Write-Host "ERROR: Run as Administrator required." -ForegroundColor Red
-    exit 1
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")
+if (-not $isAdmin) {
+    Write-Host "Requesting Administrator privileges to uninstall My Clean PC..." -ForegroundColor Yellow
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs -Wait
+    exit
 }
 
 $taskNames = @("MyCleanPC-7Min", "MyCleanPC-24Min", "MyCleanPC-Weekly", "MyCleanPC-AI-Cache", "24-Silent-Cleaner", "MyCleanPC")
 foreach ($t in $taskNames) {
     Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue
 }
+Unregister-ScheduledTask -TaskPath "\My-Clean-PC\" -TaskName "Startup Guard" -Confirm:$false -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName "Startup Guard" -Confirm:$false -ErrorAction SilentlyContinue
 
 $installDir = "$env:LOCALAPPDATA\MyCleanPC"
 if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }

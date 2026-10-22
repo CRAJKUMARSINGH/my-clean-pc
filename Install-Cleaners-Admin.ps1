@@ -34,6 +34,15 @@ Copy-Item -Force (Join-Path $ScriptsDir "Safe-Cleanup-Engine.ps1") (Join-Path $I
 Copy-Item -Force (Join-Path $ScriptsDir "ai-cache-cleaner.ps1") (Join-Path $InstallDir "ai-cache-cleaner.ps1")
 Copy-Item -Force (Join-Path $ScriptsDir "clean-pc-core.ps1") (Join-Path $InstallDir "clean-pc-core.ps1")
 Copy-Item -Force (Join-Path $ScriptsDir "cleanup_task.ps1") (Join-Path $InstallDir "cleanup_task.ps1")
+if (Test-Path (Join-Path $ScriptsDir "startup-guard.ps1")) {
+    Copy-Item -Force (Join-Path $ScriptsDir "startup-guard.ps1") (Join-Path $InstallDir "startup-guard.ps1")
+}
+if (Test-Path (Join-Path $ScriptsDir "start-on-demand.ps1")) {
+    Copy-Item -Force (Join-Path $ScriptsDir "start-on-demand.ps1") (Join-Path $InstallDir "start-on-demand.ps1")
+}
+if (Test-Path (Join-Path $ScriptsDir "create-startup-guard-task.ps1")) {
+    Copy-Item -Force (Join-Path $ScriptsDir "create-startup-guard-task.ps1") (Join-Path $InstallDir "create-startup-guard-task.ps1")
+}
 
 # Create Interactive user principal for background task execution so user %LOCALAPPDATA% and browser caches are accessed
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name

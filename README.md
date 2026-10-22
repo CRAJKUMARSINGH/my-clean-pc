@@ -83,6 +83,9 @@ You can install **Both Cleaners**, the **7-Minute Cleaner ONLY**, the **24-Minut
 | **[`scripts/ai-cache-cleaner.ps1`](scripts/ai-cache-cleaner.ps1)** | Cleaner Wrapper | **Interval Cleaner**: Invokes `Safe-Cleanup-Engine.ps1` safely for user-session background tasks without touching cookies, passwords, history, or roaming configs. |
 | **[`scripts/clean-pc-core.ps1`](scripts/clean-pc-core.ps1)** | Shared Core Utility | **Shared Core Engine**: Manages deep temporary file cleanup, sanitized CleanMgr presets (with Downloads and rollback protection), and DNS cache flushing. |
 | **[`scripts/cleanup_task.ps1`](scripts/cleanup_task.ps1)** | Task Runner | **Weekly Task Runner**: Invoked by the weekly scheduled task to execute full safe cleaning. |
+| **[`scripts/startup-guard.ps1`](scripts/startup-guard.ps1)** | Startup Guard | **On-Demand Startup Guard**: Neutralises autostart vectors for AnyDesk and Bentley stack (services, Run registry, startup shortcuts, scheduled tasks). |
+| **[`scripts/start-on-demand.ps1`](scripts/start-on-demand.ps1)** | On-Demand Launcher | **On-Demand Launcher**: Launches AnyDesk or Bentley suite on demand only after starting required services. |
+| **[`scripts/create-startup-guard-task.ps1`](scripts/create-startup-guard-task.ps1)** | Task Installer | **Policy Re-assert Task Installer**: Registers scheduled task to re-apply on-demand policy after vendor updates. |
 | **[`tests/Test-PathSafety.ps1`](tests/Test-PathSafety.ps1)** | Automated Test Suite | **Path Safety & Integrity Tests**: Verifies rejection of protected directories (Downloads, credentials, history, system roots) and approval of valid cache paths. |
 | **[`uninstall.ps1`](uninstall.ps1)** | PowerShell Uninstaller | **Uninstaller Script**: Unregisters all `MyCleanPC` scheduled tasks and removes installation directories from `%LOCALAPPDATA%\MyCleanPC`. |
 | **[`uninstall.bat`](uninstall.bat)** | Batch Uninstaller | **1-Click Batch Uninstaller**: Launches `uninstall.ps1` with Administrator privileges. |
@@ -112,6 +115,45 @@ You can install **Both Cleaners**, the **7-Minute Cleaner ONLY**, the **24-Minut
 - **Windows Prefetch & Event Logs** — Preserved intact to prevent performance degradation and maintain system diagnostic logs.
 - **Registry MachineGuid** — Strictly off-limits to preserve Windows activation and licensing integrity.
 - **Windows Update Rollback Files** — `Previous Installations` (`Windows.old`) and restore points are NEVER deleted.
+
+---
+
+## 🚀 On-Demand Startup Guard
+
+Stops AnyDesk and the Bentley stack from starting with Windows. They launch **only when you launch them.**
+
+### Targets:
+
+| App | Executable | Path |
+|---|---|---|
+| AnyDesk | `AnyDesk.exe` | `C:\Program Files (x86)\AnyDesk\` |
+| Bentley CONNECTION Client | `Bentley.Connect.Client.exe` | `C:\Program Files\Common Files\Bentley Shared\CONNECTION Client\` |
+| Bentley Licensing Service | `Bentley.Licensing.Service.exe` | `C:\Program Files\Common Files\Bentley Shared\CONNECTION Client\LicenseService\` |
+| Bentley SPC Server | `Bentley.Structural.PropertyCatalog.Server.exe` | `C:\Program Files (x86)\Bentley\Engineering\SPC Server v8i SS4\` |
+
+Neutralised autostart vectors: services (`StartMode` -> Manual), `Run`/`RunOnce` values, Startup-folder shortcuts, and scheduled tasks. All changes are backed up to `%ProgramData%\My-Clean-PC\startup-guard.json`.
+
+```powershell
+cd scripts
+
+# see what is currently auto-starting
+powershell -ExecutionPolicy Bypass -File startup-guard.ps1 -Action Status
+
+# turn autostart OFF (run elevated)
+powershell -ExecutionPolicy Bypass -File startup-guard.ps1 -Action Disable -StopNow
+
+# start the apps manually whenever you need them
+powershell -ExecutionPolicy Bypass -File start-on-demand.ps1 -App AnyDesk
+powershell -ExecutionPolicy Bypass -File start-on-demand.ps1 -App Bentley
+
+# keep it that way after AnyDesk/Bentley updates
+powershell -ExecutionPolicy Bypass -File create-startup-guard-task.ps1
+
+# roll everything back to stock behaviour
+powershell -ExecutionPolicy Bypass -File startup-guard.ps1 -Action Enable
+```
+
+Use `-Target AnyDesk` or `-Target Bentley` to scope it, and `-Hard` to set services to `Disabled` instead of `Manual`.
 
 ---
 

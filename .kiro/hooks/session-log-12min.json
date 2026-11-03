@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Session Log Auto-Update (12 min)",
+      "trigger": "SessionStart",
+      "description": "Updates creat.md timestamp and mirrors session log into README.md. Fires at session start; pair with a Windows scheduled task for the 12-min interval.",
+      "action": {
+        "type": "command",
+        "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"e:\\Rajkumar\\my-clean-pc\\.kiro\\hooks\\update-session-log.ps1\" -RepoRoot \"e:\\Rajkumar\\my-clean-pc\""
+      }
+    }
+  ]
+}

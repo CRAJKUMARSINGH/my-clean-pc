@@ -127,6 +127,20 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 
 ---
 
+## 🗒️ Session Log
+
+> Auto-updated every 12 minutes. Full log in [`creat.md`](creat.md).
+
+### 2026-11-03
+
+| Time | Action |
+|------|--------|
+| 10:00 | Read `DUE-TASKS.txt` — identified 6 AI IDE Roaming paths to clean (Antigravity IDE, Cursor, DEVIN, TRAE, WINDSURF, KIRO) |
+| 10:05 | Updated `Safe-Cleanup-Engine.ps1` + `clean-pc-core.ps1` to cover all 6 paths; committed `9715629`; pushed to `origin/main`; installed to `%LOCALAPPDATA%\MyCleanPC` |
+| 10:15 | Created `creat.md` session log; set up 12-min auto-update hook (`session-log-12min`); standing order: `creat.md` + `README.md §Session Log` stay in sync |
+
+---
+
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE).

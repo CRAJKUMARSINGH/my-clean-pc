@@ -35,6 +35,29 @@ Copy-Item -Force (Join-Path $ScriptsDir "ai-cache-cleaner.ps1") (Join-Path $Inst
 Copy-Item -Force (Join-Path $ScriptsDir "clean-pc-core.ps1") (Join-Path $InstallDir "clean-pc-core.ps1")
 Copy-Item -Force (Join-Path $ScriptsDir "cleanup_task.ps1") (Join-Path $InstallDir "cleanup_task.ps1")
 
+# Register session-log 12-minute update task
+$sessionLogScript = Join-Path $RepoRoot ".kiro\hooks\update-session-log.ps1"
+if (Test-Path $sessionLogScript) {
+    Write-Host "1a. Registering Task: MyCleanPC-SessionLog-12Min..." -ForegroundColor Cyan
+    $slTaskName = "MyCleanPC-SessionLog-12Min"
+    $slAction   = New-ScheduledTaskAction -Execute "powershell.exe" `
+                    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$sessionLogScript`" -RepoRoot `"$RepoRoot`""
+    $slStartAt  = (Get-Date).AddMinutes(1)
+    $slTrigger  = New-ScheduledTaskTrigger -Once -At $slStartAt `
+                    -RepetitionInterval (New-TimeSpan -Minutes 12) `
+                    -RepetitionDuration (New-TimeSpan -Days 9999)
+    $slSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
+                    -MultipleInstances IgnoreNew -StartWhenAvailable `
+                    -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -Priority 7
+    Unregister-ScheduledTask -TaskName $slTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    try {
+        Register-ScheduledTask -TaskName $slTaskName -Action $slAction -Trigger $slTrigger `
+            -Settings $slSettings -Principal $principal -Force | Out-Null
+        Write-Host "  MyCleanPC-SessionLog-12Min registered (updates creat.md + README.md every 12 min)." -ForegroundColor Green
+    } catch {
+        Write-Host "  Warning: Could not register session log task: $_" -ForegroundColor Yellow
+    }
+}
 # Create Interactive user principal for background task execution so user %LOCALAPPDATA% and browser caches are accessed
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
@@ -109,17 +132,19 @@ if ($installWeekly) {
 
 # --- VERIFICATION ---
 Write-Host "4. Verifying task registration..." -ForegroundColor Cyan
-$t7 = Get-ScheduledTask -TaskName "MyCleanPC-7Min" -ErrorAction SilentlyContinue
-$t1 = Get-ScheduledTask -TaskName "MyCleanPC-24Min" -ErrorAction SilentlyContinue
-$t2 = Get-ScheduledTask -TaskName "MyCleanPC-Weekly" -ErrorAction SilentlyContinue
+$t7  = Get-ScheduledTask -TaskName "MyCleanPC-7Min"      -ErrorAction SilentlyContinue
+$t1  = Get-ScheduledTask -TaskName "MyCleanPC-24Min"     -ErrorAction SilentlyContinue
+$t2  = Get-ScheduledTask -TaskName "MyCleanPC-Weekly"    -ErrorAction SilentlyContinue
+$tsl = Get-ScheduledTask -TaskName "MyCleanPC-SessionLog-12Min" -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "====================================================" -ForegroundColor Green
 Write-Host " SUCCESS: CLEANER INSTALLATION COMPLETE!" -ForegroundColor Green
 Write-Host "====================================================" -ForegroundColor Green
-if ($t7) { Write-Host " Task: MyCleanPC-7Min   -> Every 7 Minutes [State: $($t7.State)]" -ForegroundColor White }
-if ($t1) { Write-Host " Task: MyCleanPC-24Min  -> Every 24 Minutes [State: $($t1.State)]" -ForegroundColor White }
-if ($t2) { Write-Host " Task: MyCleanPC-Weekly -> Every Week [State: $($t2.State)]" -ForegroundColor White }
+if ($t7)  { Write-Host " Task: MyCleanPC-7Min             -> Every 7 Minutes [State: $($t7.State)]" -ForegroundColor White }
+if ($t1)  { Write-Host " Task: MyCleanPC-24Min            -> Every 24 Minutes [State: $($t1.State)]" -ForegroundColor White }
+if ($t2)  { Write-Host " Task: MyCleanPC-Weekly           -> Every Week [State: $($t2.State)]" -ForegroundColor White }
+if ($tsl) { Write-Host " Task: MyCleanPC-SessionLog-12Min -> Every 12 Min [State: $($tsl.State)]" -ForegroundColor White }
 Write-Host " Mode: Silent background execution when PC is ON" -ForegroundColor White
 Write-Host "====================================================" -ForegroundColor Green
 Write-Host ""

@@ -438,8 +438,20 @@ function Get-SafeCleanupTargets {
     # (F) AI & Developer Applications (Roaming & LocalAppData)
     # Target applications requested: Kiro, Antigravity, Devin, Windsurf, Trae, Cursor, Qoder, Warp, Genspark, VS Code
     $aiAppNames = @(
-        "Kiro", "kiro", "Antigravity", "Antigravity IDE", "devin", "Devin", "Windsurf", 
-        "Trae", "trae", "trae-ai", "TRAE SOLO", "Trae Solo", "trae solo", "trae-solo", "Cursor", "cursor", "Qoder", "qoder", "Warp", "warp", 
+        # Kiro IDE (from DUE-TASKS: %APPDATA%\KIRO)
+        "Kiro", "kiro", "KIRO",
+        # Antigravity IDE (from DUE-TASKS: %APPDATA%\Antigravity IDE)
+        "Antigravity", "Antigravity IDE", "antigravity ide",
+        # Devin AI (from DUE-TASKS: %APPDATA%\DEVIN)
+        "devin", "Devin", "DEVIN",
+        # Windsurf IDE (from DUE-TASKS: %APPDATA%\WINDSURF)
+        "Windsurf", "WINDSURF", "windsurf",
+        # Trae AI (from DUE-TASKS: %APPDATA%\TRAE)
+        "Trae", "trae", "trae-ai", "TRAE SOLO", "Trae Solo", "trae solo", "trae-solo", "TRAE",
+        # Cursor IDE (from DUE-TASKS: %APPDATA%\Cursor)
+        "Cursor", "cursor",
+        # Other AI/Dev tools
+        "Qoder", "qoder", "Warp", "warp",
         "Genspark", "GensparkSoftware", "Code"
     )
 
@@ -490,10 +502,41 @@ function Get-SafeCleanupTargets {
     $dedicatedCaches = @(
         @{ Name = "Antigravity Updater"; Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "antigravity-updater") },
         @{ Name = "Qoder Updater";       Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "qoder-updater") },
-        @{ Name = "Cursor Compile Cache";Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "cursor-compile-cache") }
+        @{ Name = "Cursor Compile Cache";Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "cursor-compile-cache") },
+        @{ Name = "Devin Updater";       Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "devin-updater") },
+        @{ Name = "Windsurf Updater";    Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "windsurf-updater") },
+        @{ Name = "Kiro Updater";        Path = [System.IO.Path]::Combine($env:LOCALAPPDATA, "kiro-updater") }
     )
     foreach ($dc in $dedicatedCaches) {
         Add-TargetHelper $dc.Name "$($dc.Name) Cache" $dc.Path $false $true $false
+    }
+
+    # (H) DUE-TASKS: Explicit Roaming-path cache cleaning for the 6 AI IDEs listed in DUE-TASKS.txt
+    #     Paths: %APPDATA%\Antigravity IDE, %APPDATA%\Cursor, %APPDATA%\DEVIN,
+    #            %APPDATA%\TRAE, %APPDATA%\WINDSURF, %APPDATA%\KIRO
+    $dueCacheSubdirs = @(
+        "Cache", "Cache\Cache_Data", "CachedData", "CachedConfigurations", "CachedExtensionVSIXs",
+        "Code Cache\js", "Code Cache\wasm", "GPUCache", "ShaderCache", "GrShaderCache",
+        "DawnCache", "DawnWebGPUCache", "DawnGraphiteCache", "Crashpad\reports", "logs",
+        "blob_storage", "Service Worker\CacheStorage", "Service Worker\ScriptCache", "sentry"
+    )
+    $dueTasksRoamingApps = @(
+        @{ Name = "Antigravity IDE"; FolderNames = @("Antigravity IDE", "Antigravity", "antigravity ide") },
+        @{ Name = "Cursor";          FolderNames = @("Cursor", "cursor") },
+        @{ Name = "DEVIN";           FolderNames = @("DEVIN", "Devin", "devin") },
+        @{ Name = "TRAE";            FolderNames = @("TRAE", "Trae", "trae", "TRAE SOLO", "Trae Solo") },
+        @{ Name = "WINDSURF";        FolderNames = @("WINDSURF", "Windsurf", "windsurf") },
+        @{ Name = "KIRO";            FolderNames = @("KIRO", "Kiro", "kiro") }
+    )
+    foreach ($dueApp in $dueTasksRoamingApps) {
+        foreach ($folderName in $dueApp.FolderNames) {
+            $roamingPath = [System.IO.Path]::Combine($env:APPDATA, $folderName)
+            if (-not (Test-Path -LiteralPath $roamingPath)) { continue }
+            foreach ($sub in $dueCacheSubdirs) {
+                $targetPath = Join-Path $roamingPath $sub
+                Add-TargetHelper "$($dueApp.Name) Roaming Cache" "$($dueApp.Name) (Roaming\$folderName -> $sub)" $targetPath
+            }
+        }
     }
 
     return $targets

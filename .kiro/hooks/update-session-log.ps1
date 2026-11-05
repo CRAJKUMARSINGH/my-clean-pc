@@ -17,7 +17,11 @@ $today      = Get-Date -Format "yyyy-MM-dd"
 # ── 1. Update the "Last updated" timestamp in creat.md ──────────────────────
 if (Test-Path $creatPath) {
     $content = Get-Content $creatPath -Raw
-    $content = $content -replace '\*Last updated:.*\*', "*Last updated: $now — hook will keep this current automatically.*"
+    # Use single-quoted replacement target; build the replacement string separately
+    $replacement = "*Last updated: $now - hook will keep this current automatically.*"
+    $content = $content -replace '\*Last updated:.*\*', [regex]::Escape($replacement) -replace '\\(.)', '$1'
+    # Simpler: just do a clean string replace via -replace with literal substitution
+    $content = [regex]::Replace($content, '\*Last updated:[^*]*\*', "*Last updated: $now - hook will keep this current automatically.*")
     Set-Content -Path $creatPath -Value $content -Encoding UTF8 -NoNewline
 }
 
@@ -25,15 +29,20 @@ if (Test-Path $creatPath) {
 if (Test-Path $readmePath) {
     $readme = Get-Content $readmePath -Raw
 
-    # Build today's table row (append if not present for this date)
-    $rowMarker = "| $today |"
+    # Build today's row text (no special regex chars in the literal row value)
+    $hookName   = 'session-log-12min'
+    $rowText    = "| $today | Session log auto-updated at $now via ``$hookName`` hook |"
+    $rowMarker  = "| $today |"
+
     if ($readme -notmatch [regex]::Escape($rowMarker)) {
-        $newRow = "| $today | Session log auto-updated at $now via `session-log-12min` hook |"
-        $readme = $readme -replace '(\| Time \| Action \|\r?\n\|---.*\|\r?\n)', "`$1$newRow`n"
+        # Insert new row after the header separator line of the table
+        $tableHeaderPattern = '(\| Time \| Action \|\r?\n\|[-| ]+\|\r?\n)'
+        $readme = [regex]::Replace($readme, $tableHeaderPattern, "`$1$rowText`n")
         Set-Content -Path $readmePath -Value $readme -Encoding UTF8 -NoNewline
     } else {
-        # Update existing row timestamp
-        $readme = $readme -replace "(\| $today \|[^\n]*)", "| $today | Session log auto-updated at $now via \`session-log-12min\` hook |"
+        # Update existing row for today
+        $existingRowPattern = [regex]::Escape($rowMarker) + '[^\n]*'
+        $readme = [regex]::Replace($readme, $existingRowPattern, $rowText)
         Set-Content -Path $readmePath -Value $readme -Encoding UTF8 -NoNewline
     }
 }

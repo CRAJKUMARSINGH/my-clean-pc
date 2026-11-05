@@ -786,7 +786,7 @@ $script:ProcessDisplayNames = @{
     arc = 'Arc Browser'; wavebox = 'Wavebox'; sidekick = 'Sidekick'
     duckduckgo = 'DuckDuckGo'; whale = 'Naver Whale'; maxthon = 'Maxthon'
     thorium = 'Thorium'; floorp = 'Floorp'; zen = 'Zen Browser'
-    Kiro = 'Kiro'; Windsurf = 'Windsurf'; Trae = 'Trae'; 'Trae Solo' = 'Trae Solo'; 'TRAE SOLO' = 'Trae Solo'; 'trae solo' = 'Trae Solo'; 'trae-solo' = 'Trae Solo'; Solo = 'Trae Solo'; solo = 'Trae Solo'; Devin = 'Devin'
+    Kiro = 'Kiro'; Windsurf = 'Windsurf'; Trae = 'Trae'; 'Trae Solo' = 'Trae Solo'; 'trae-solo' = 'Trae Solo'; Solo = 'Trae Solo'; Devin = 'Devin'
     'Antigravity IDE' = 'Antigravity IDE'; Antigravity = 'Antigravity IDE'; 'Qoder IDE' = 'Qoder IDE'; Qoder = 'Qoder IDE'; warp = 'Warp'
     Genspark = 'Genspark'; ChatGPT = 'ChatGPT'; Claude = 'Claude'
 }

@@ -160,6 +160,33 @@ $script:ApprovedCacheLeaves = @(
     "qoder-updater"
 )
 
+# PERF-FIX: Pre-build whitelisted app folders once at load time, not inside Test-PathSafety on every call.
+# Previously 14 Path.Combine calls were made per Test-PathSafety invocation.
+$script:WhitelistedAppFolders = @(
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:APPDATA, "Trae")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:APPDATA, "trae")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:APPDATA, "trae-ai")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:APPDATA, "TRAE SOLO")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:APPDATA, "Trae Solo")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:APPDATA, "trae solo")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:LOCALAPPDATA, "Trae")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:LOCALAPPDATA, "trae")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:LOCALAPPDATA, "TRAE SOLO")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:LOCALAPPDATA, "Trae Solo")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:LOCALAPPDATA, "trae solo")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:LOCALAPPDATA, "antigravity-updater")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:LOCALAPPDATA, "qoder-updater")).TrimEnd('\')
+    [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($env:LOCALAPPDATA, "cursor-compile-cache")).TrimEnd('\')
+)
+
+# Pre-build temp roots once at load time (used in Test-PathSafety)
+$script:TempRootNorms = @(
+    [System.IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+    [System.IO.Path]::GetFullPath("$env:LOCALAPPDATA\Temp").TrimEnd('\')
+    [System.IO.Path]::GetFullPath("C:\Windows\Temp").TrimEnd('\')
+    [System.IO.Path]::GetFullPath("$env:LOCALAPPDATA\Microsoft\Windows\INetCache").TrimEnd('\')
+) | Select-Object -Unique
+
 function Test-PathSafety {
     <#
     .SYNOPSIS
@@ -198,44 +225,19 @@ function Test-PathSafety {
         }
     }
 
-    # 4. Whitelisted AI / Leftover App full folders (e.g. Trae)
-    $whitelistedAppFolders = @(
-        [System.IO.Path]::Combine($env:APPDATA, "Trae"),
-        [System.IO.Path]::Combine($env:APPDATA, "trae"),
-        [System.IO.Path]::Combine($env:APPDATA, "trae-ai"),
-        [System.IO.Path]::Combine($env:APPDATA, "TRAE SOLO"),
-        [System.IO.Path]::Combine($env:APPDATA, "Trae Solo"),
-        [System.IO.Path]::Combine($env:APPDATA, "trae solo"),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, "Trae"),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, "trae"),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, "TRAE SOLO"),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, "Trae Solo"),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, "trae solo"),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, "antigravity-updater"),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, "qoder-updater"),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, "cursor-compile-cache")
-    )
-    foreach ($waf in $whitelistedAppFolders) {
-        $normWaf = [System.IO.Path]::GetFullPath($waf).TrimEnd('\')
+    # 4. Whitelisted AI / Leftover App full folders — use pre-built script-level list (PERF-FIX)
+    foreach ($normWaf in $script:WhitelistedAppFolders) {
         if ($norm -ieq $normWaf -or $norm.StartsWith($normWaf + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
             return $true
         }
     }
 
-    # 5. Target must be within an approved parent root:
-    #    - %TEMP% / %LOCALAPPDATA%\Temp
-    #    - C:\Windows\Temp
-    #    - INetCache
-    #    - A valid browser/app cache directory whose leaf is in $script:ApprovedCacheLeaves
+    # 5. Target must be within an approved parent root — use pre-built list (PERF-FIX)
     $isTemp = $false
-    $tempRoots = @($env:TEMP, "$env:LOCALAPPDATA\Temp", "C:\Windows\Temp", "$env:LOCALAPPDATA\Microsoft\Windows\INetCache") | Select-Object -Unique
-    foreach ($tr in $tempRoots) {
-        if ($tr) {
-            $normTr = [System.IO.Path]::GetFullPath($tr).TrimEnd('\')
-            if ($norm -ieq $normTr -or $norm.StartsWith($normTr + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
-                $isTemp = $true
-                break
-            }
+    foreach ($normTr in $script:TempRootNorms) {
+        if ($normTr -and ($norm -ieq $normTr -or $norm.StartsWith($normTr + "\", [System.StringComparison]::OrdinalIgnoreCase))) {
+            $isTemp = $true
+            break
         }
     }
 
@@ -755,7 +757,7 @@ function Invoke-SafeWindows10Cleanup {
     )
 
     if ([string]::IsNullOrWhiteSpace($LogFile)) {
-        $LogFile = $script:LogFile
+        $LogFile = $script:EngineLogFile   # use the module-level log file path (PERF-FIX: was $script:LogFile which is undefined)
     }
 
     Write-EngineLog "============================================================" "AUDIT"

@@ -19,12 +19,27 @@ if (-not (Test-Path $corePath)) {
 }
 . $corePath
 
+# PERF-FIX #25: Buffer log writes — use StreamWriter instead of two Add-Content calls per line.
+$script:TaskLogBuffer = [System.Collections.Generic.List[string]]::new()
+
+function Flush-TaskLog {
+    if ($script:TaskLogBuffer.Count -eq 0) { return }
+    foreach ($lp in @($logFile, $tempLogFile)) {
+        try {
+            $sw = [System.IO.StreamWriter]::new($lp, $true, [System.Text.Encoding]::UTF8)
+            try { foreach ($line in $script:TaskLogBuffer) { $sw.WriteLine($line) } }
+            finally { $sw.Close() }
+        } catch {}
+    }
+    $script:TaskLogBuffer.Clear()
+}
+
 function Write-Log {
     param([string]$Message)
     $logLine = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
     Write-Host $logLine
-    Add-Content -Path $logFile -Value $logLine -ErrorAction SilentlyContinue
-    Add-Content -Path $tempLogFile -Value $logLine -ErrorAction SilentlyContinue
+    $script:TaskLogBuffer.Add($logLine)
+    if ($script:TaskLogBuffer.Count -ge 20) { Flush-TaskLog }
 }
 
 # Pre-load MoveFileEx P/Invoke so it is available inside the try block
@@ -100,13 +115,13 @@ function Remove-WindowsUpgradeStaging {
 try {
     Write-Log "===== Cleanup Started ====="
 
-    # Show warning before cleaning starts
+    # PERF-FIX #24: Removed unconditional Start-Sleep -Seconds 30 that blocked every run.
+    # The toast notification fires immediately; cleaning starts right away.
     try {
         Show-MyCleanPCNotice `
             -Title "My Clean PC - Scheduled Cleaning Starting" `
-            -Body "Scheduled cleanup will begin in 30 seconds. You can continue using your computer normally." `
+            -Body "Scheduled cleanup is running now. You can continue using your computer normally." `
             -Log { param([string]$Message) Write-Log $Message }
-        Start-Sleep -Seconds 30
     } catch {
         Write-Log "Warning notification failed, proceeding with cleanup"
     }
@@ -127,8 +142,10 @@ try {
     }
 
     Write-Log "===== Cleanup Finished ====="
+    Flush-TaskLog
 } catch {
     Write-Log "===== Cleanup FAILED: $($_.Exception.Message) ====="
+    Flush-TaskLog
     try {
         Show-MyCleanPCNotice `
             -Title "My Clean PC stopped" `

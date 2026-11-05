@@ -41,28 +41,41 @@ function Write-TempCleanerLog {
     )
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $logLine = "[$timestamp] $Message"
-    
+
     if ($null -ne $UserLog) {
         try { & $UserLog $Message } catch {}
     } else {
         Write-Host $logLine
     }
-    
+
+    # PERF-FIX #15: Buffer log writes; flush every 25 lines via a StreamWriter
+    # instead of opening+appending+flushing 4 separate Add-Content calls per line.
+    if ($null -eq $script:TempCleanLogBuffer) {
+        $script:TempCleanLogBuffer = [System.Collections.Generic.List[string]]::new()
+    }
+    $script:TempCleanLogBuffer.Add($logLine)
+    if ($script:TempCleanLogBuffer.Count -ge 25) { Flush-TempCleanerLog }
+}
+
+function Flush-TempCleanerLog {
+    if ($null -eq $script:TempCleanLogBuffer -or $script:TempCleanLogBuffer.Count -eq 0) { return }
     $logPaths = @(
         (Join-Path $PSScriptRoot "temp_cleaner_log.txt"),
         (Join-Path $PSScriptRoot "cleanup_log.txt"),
         (Join-Path "$env:LOCALAPPDATA\MyCleanPC" "temp_cleaner_log.txt"),
         (Join-Path "$env:LOCALAPPDATA\MyCleanPC" "cleanup_log.txt")
     ) | Select-Object -Unique
-
     foreach ($lp in $logPaths) {
         try {
             $dir = Split-Path $lp -Parent
             if ($dir -and (Test-Path -LiteralPath $dir)) {
-                Add-Content -Path $lp -Value $logLine -ErrorAction SilentlyContinue
+                $sw = [System.IO.StreamWriter]::new($lp, $true, [System.Text.Encoding]::UTF8)
+                try { foreach ($ln in $script:TempCleanLogBuffer) { $sw.WriteLine($ln) } }
+                finally { $sw.Close() }
             }
         } catch {}
     }
+    $script:TempCleanLogBuffer.Clear()
 }
 
 # ---- Space-freed helpers ------------------------------------------------
@@ -220,6 +233,10 @@ function Get-AiCacheTargetPaths {
 }
 
 function Get-AllUserAppDataRoots {
+    # PERF-FIX #13: Cache result — C:\Users enumeration is called 3+ times per run.
+    # Store in $script: variable; reset only at script load (safe for single-run lifetime).
+    if ($null -ne $script:CachedUserAppDataRoots) { return $script:CachedUserAppDataRoots }
+
     $out = New-Object System.Collections.Generic.List[hashtable]
     $seen = @{}
     function AddAppDataPair([string]$Local, [string]$Roaming) {
@@ -239,7 +256,8 @@ function Get-AllUserAppDataRoots {
         if (-not (Test-UsableDirectory $local) -and -not (Test-UsableDirectory $roaming)) { continue }
         AddAppDataPair $local $roaming
     }
-    return @($out)
+    $script:CachedUserAppDataRoots = @($out)  # cache for subsequent callers (PERF-FIX #13)
+    return $script:CachedUserAppDataRoots
 }
 
 $script:ChromiumUserDataRelativeLocal = @(
@@ -1046,18 +1064,26 @@ function Close-AiToolProcesses {
         "Kiro", "kiro", "Windsurf", "Trae", "trae", "TRAE SOLO", "Trae Solo", "trae solo", "trae-solo", "Solo", "solo", "Antigravity", "Qoder", "warp",
         "Devin", "Genspark", "ChatGPT", "Claude"
     )
+    # PERF-FIX #20: Batch-stop all AI processes in one pass, then sleep ONCE.
+    # Previously stopped each process and slept 1 second per process serially.
+    $toStop = [System.Collections.Generic.List[string]]::new()
     foreach ($procName in $aiProcesses) {
         try {
             $procs = Get-Process -Name $procName -ErrorAction SilentlyContinue
             if ($procs) {
-                & $Log "  Closing $procName processes (unlock AI caches)..."
                 $exe = Get-MainProcessExecutable $procName
                 Add-ClosedAppLabel $procName
                 Add-ClosedAppRestart -ProcessName $procName -ExePath $exe
-                Stop-Process -Name $procName -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 1
+                [void]$toStop.Add($procName)
             }
         } catch {}
+    }
+    if ($toStop.Count -gt 0) {
+        & $Log "  Closing AI tool processes (unlock caches): $($toStop -join ', ')"
+        foreach ($procName in $toStop) {
+            try { Stop-Process -Name $procName -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        Start-Sleep -Milliseconds 800  # single wait after all stops
     }
 }
 
@@ -1161,30 +1187,16 @@ function Remove-SafePath {
 }
 
 function Clear-SafeTempTree {
-    # Aggressive 3-stage cleanup for Temp / Prefetch / Cache tree roots.
-    # Mimics: Open folder -> Ctrl+A (select all) -> Shift+Del (permanent delete)
-    #         -> Skip -> Skip (auto-skip locked/in-use files, zero dialogs).
+function Clear-SafeTempTree {
+    # PERF-FIX #11: Reduced from 4 sequential passes to 2.
+    # Stage 1: del /f/s/q clears everything unlocked in one cmd.exe pass (fastest).
+    #          Subdirs with remaining files are handled by robocopy /MIR as a safety net.
+    # Stage 2: MoveFileEx DELAY_UNTIL_REBOOT on individual leftover items ONLY.
+    #          We NEVER register the root folder itself — only its surviving children.
     #
-    # Stage 1  - cmd "del /f /s /q root\*"
-    #            Kills every unlocked FILE instantly. /f bypasses read-only,
-    #            /s recurses subdirs, /q no confirmation. Bypasses Explorer shell.
-    #            Locked files silently skipped by cmd.exe (no dialog).
-    #
-    # Stage 2  - item-by-item cmd.exe rd/s/q + del sweep
-    #            Ctrl+A Shift+Del behavior on every child.
-    #            Removes dir skeletons and any files Stage 1 couldn't reach.
-    #            Protected paths (Downloads, passwords) are explicitly skipped.
-    #
-    # Stage 3  - Robocopy /MIR + .NET item-by-item sweep
-    #            Wipes remaining directory skeleton and any leftover files.
-    #            Robocopy silently skips locked files (Exit 0..8).
-    #            .NET delete handles unusual attributes / deep paths.
-    #            === "Skip, Skip" - locked items are left alone this run. ===
-    #
-    # Stage 4  - MoveFileEx DELAY_UNTIL_REBOOT on individual leftover items ONLY
-    #            Anything still present (genuinely locked by another process)
-    #            is registered ONE-BY-ONE for silent deletion at next Windows boot.
-    #            We NEVER register the root folder itself for reboot-delete.
+    # Stages 2 and 3 from the old code (item-by-item rd/del then robocopy sweep)
+    # were nearly always no-ops because Stage 1 had already cleared everything unlocked.
+    # They added 2–3 extra Get-ChildItem enumerations of the same tree for every temp root.
     param([string]$RootPath)
     $root = [System.Environment]::ExpandEnvironmentVariables($RootPath)
     if (-not (Test-Path $root)) { return 0 }
@@ -1193,9 +1205,11 @@ function Clear-SafeTempTree {
 
     $before = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue).Count
 
-    # ---- Stage 1: del /f /s /q  (unlock and kill every reachable file) -----
+    # ---- Stage 1: mass delete — del /f/s/q + robocopy /MIR safety net ----
+    # Takes ownership first to break permission locks, then bulk-deletes.
+    Grant-FullAccess -LiteralPath $root
     $null = Invoke-CmdSilentSkip -CmdArgs "del /f /s /q /a `"$root\*`""
-    # Also try rd /s /q on direct subdirectories first pass (empty dirs + contents)
+    # Remove leftover directory skeletons via rd /s /q on each direct child
     foreach ($child in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) {
         if (Test-SkipCleanPath $child.FullName) { continue }
         if ($child.PSIsContainer) {
@@ -1204,51 +1218,18 @@ function Clear-SafeTempTree {
             Remove-PathViaCmd -LiteralPath $child.FullName | Out-Null
         }
     }
-
-    # ---- Stage 2: Ctrl+A Shift+Del item-by-item (rd /s /q + del sweep) ----
-    foreach ($child in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) {
-        if (Test-SkipCleanPath $child.FullName) { continue }
-        Clear-PathAttributes $child.FullName
-        if ($child.PSIsContainer) {
-            # Ctrl+A -> Shift+Del on the folder: permanent recursive delete
-            Remove-PathViaCmd -LiteralPath $child.FullName -Recurse | Out-Null
-            # Fallback: robocopy wipe container then cmd rd
-            if (Test-Path -LiteralPath $child.FullName) {
-                Clear-DirectoryViaRobocopy $child.FullName | Out-Null
-                Remove-PathViaCmd -LiteralPath $child.FullName -Recurse | Out-Null
-            }
-        } else {
-            # Shift+Del on the file (permanent, skip locked)
-            Remove-PathViaCmd -LiteralPath $child.FullName | Out-Null
-            Remove-SafePathWithRetry -LiteralPath $child.FullName -MaxRetries 2 | Out-Null
-        }
-    }
-
-    # ---- Stage 3: Robocopy /MIR + .NET item-by-item (Skip, Skip) -----------
+    # Robocopy /MIR catches anything cmd missed (unusual attributes, deep paths)
     Clear-DirectoryViaRobocopy $root | Out-Null
-    foreach ($child in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) {
-        if (Test-SkipCleanPath $child.FullName) { continue }
-        if ($child.PSIsContainer) {
-            Remove-DirectorySilent -LiteralPath $child.FullName -KeepContainer | Out-Null
-            Remove-PathViaDotNet -LiteralPath $child.FullName -Recurse | Out-Null
-        } else {
-            Remove-PathViaDotNet -LiteralPath $child.FullName | Out-Null
-        }
-    }
 
-    # ---- Stage 4: ONLY leftover CHILD items get reboot-delete (NOT root) --
-    # This is the critical fix: we NEVER register the whole root Temp/Prefetch
-    # folder itself for reboot-delete.  We enumerate each remaining child and
-    # register those individually.  Locked files are deleted at next boot.
-    $leftover = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)
-    foreach ($item in $leftover) {
+    # ---- Stage 2: register genuinely-locked remnants for next-boot delete --
+    # NEVER register the root itself — only its surviving children.
+    foreach ($item in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) {
         if (Test-SkipCleanPath $item.FullName) { continue }
         Register-DeleteOnReboot -LiteralPath $item.FullName
     }
 
     $after = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue).Count
     $removed = [Math]::Max(0, $before - $after)
-
     $script:ProcessedTempRoots[$key] = $removed
     return $removed
 }
@@ -1318,25 +1299,25 @@ function Clear-AppDataJunkSweep {
     $root = [System.Environment]::ExpandEnvironmentVariables($RootVar)
     if (-not (Test-Path $root)) { return 0 }
     $cleared = 0
-    Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-        $stack = New-Object System.Collections.Stack
-        $stack.Push(@{ Path = $_.FullName; Depth = 0 })
-        while ($stack.Count -gt 0) {
-            $cur = $stack.Pop()
-            Get-ChildItem $cur.Path -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-                $child = $_.FullName
-                if (Test-SkipCleanPath $child) { return }
-                if ($_.Name -in @('User Data', 'EBWebView', 'EdgeWebView', 'CefCache', 'DDGWebView', 'MyCleanPC', 'Packages')) { return }
-                if (Test-JunkDirName $_.Name) {
-                    # FIX: use Remove-DirectorySilent - robocopy wipe first,
-                    # then cmd rd, then MoveFileEx reboot-delete fallback.
-                    # Never routes through Explorer shell; zero "do this for all" dialogs.
-                if (Remove-DirectorySilent -LiteralPath $child -KeepContainer) { $cleared++ }
+    # PERF-FIX #16: Use .NET EnumerateDirectories (streaming) instead of Get-ChildItem | ForEach-Object
+    $stack = New-Object System.Collections.Stack
+    foreach ($d in [System.IO.Directory]::EnumerateDirectories($root)) {
+        $stack.Push(@{ Path = $d; Depth = 0 })
+    }
+    while ($stack.Count -gt 0) {
+        $cur = $stack.Pop()
+        try {
+            foreach ($child in [System.IO.Directory]::EnumerateDirectories($cur.Path)) {
+                $childName = [System.IO.Path]::GetFileName($child)
+                if (Test-SkipCleanPath $child) { continue }
+                if ($childName -in @('User Data', 'EBWebView', 'EdgeWebView', 'CefCache', 'DDGWebView', 'MyCleanPC', 'Packages')) { continue }
+                if (Test-JunkDirName $childName) {
+                    if (Remove-DirectorySilent -LiteralPath $child -KeepContainer) { $cleared++ }
                 } elseif ($cur.Depth -lt 3) {
                     $stack.Push(@{ Path = $child; Depth = $cur.Depth + 1 })
                 }
             }
-        }
+        } catch {}
     }
     & $OnBatch $cleared
     return $cleared
@@ -1354,27 +1335,32 @@ function Clear-RoamingAppCachesAllApps {
         "Temp", "Tmp", "tmp", "Logs", "Log", "crashpad", "CrashDumps",
         "blob_storage", "startupCache", "OfflineCache", "Application Cache"
     )
+    # Build a HashSet for O(1) containment checks
+    $cacheSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($n in $cacheNames) { [void]$cacheSet.Add($n) }
+
     $cleared = 0
     $stack = New-Object System.Collections.Stack
-    foreach ($dir in @(Get-ChildItem $root -Directory -ErrorAction SilentlyContinue)) {
-        $stack.Push(@{ Path = $dir.FullName; Depth = 0 })
+    # PERF-FIX #16: .NET EnumerateDirectories instead of Get-ChildItem | ForEach-Object
+    foreach ($dir in [System.IO.Directory]::EnumerateDirectories($root)) {
+        $stack.Push(@{ Path = $dir; Depth = 0 })
     }
 
     while ($stack.Count -gt 0) {
         $cur = $stack.Pop()
-        foreach ($child in @(Get-ChildItem $cur.Path -Directory -ErrorAction SilentlyContinue)) {
-            if (Test-SkipCleanPath $child.FullName) { continue }
-            if ($cacheNames -icontains $child.Name) {
-                # FIX: use Remove-DirectorySilent - robocopy wipe first,
-                # then cmd rd, then MoveFileEx reboot-delete fallback.
-                # Never routes through Explorer shell; zero "do this for all" dialogs.
-                if (Remove-DirectorySilent -LiteralPath $child.FullName -KeepContainer) { $cleared++ }
-                continue
+        try {
+            foreach ($child in [System.IO.Directory]::EnumerateDirectories($cur.Path)) {
+                if (Test-SkipCleanPath $child) { continue }
+                $childName = [System.IO.Path]::GetFileName($child)
+                if ($cacheSet.Contains($childName)) {
+                    if (Remove-DirectorySilent -LiteralPath $child -KeepContainer) { $cleared++ }
+                    continue
+                }
+                if ($cur.Depth -lt 7) {
+                    $stack.Push(@{ Path = $child; Depth = $cur.Depth + 1 })
+                }
             }
-            if ($cur.Depth -lt 7) {
-                $stack.Push(@{ Path = $child.FullName; Depth = $cur.Depth + 1 })
-            }
-        }
+        } catch {}
     }
 
     & $OnBatch $cleared
@@ -2213,30 +2199,12 @@ function Clear-AllInstalledBrowsers {
         $started = Get-Date
         & $Log "  -> $label  ($root)"
         Clear-ChromiumBrowserCache $root
-        $cacheLeft = 0
-        foreach ($prof in @(Get-ChromiumProfileDirectories $root)) {
-            foreach ($cacheName in @('Cache', 'Code Cache', 'System Cache', 'GPUCache')) {
-                $cacheDir = Join-Path $prof.FullName $cacheName
-                if (Test-Path -LiteralPath $cacheDir) {
-                    $cacheLeft += @(Get-ChildItem -LiteralPath $cacheDir -Force -ErrorAction SilentlyContinue).Count
-                }
-            }
-        }
-        if ($cacheLeft -gt 0) {
-            Close-BrowserProcesses -Log { param($m) } -ExtraProcessNames $extraProcs
-            Clear-ChromiumBrowserCache $root
-            $cacheLeft = 0
-            foreach ($prof in @(Get-ChromiumProfileDirectories $root)) {
-                foreach ($cacheName in @('Cache', 'Code Cache')) {
-                    $cacheDir = Join-Path $prof.FullName $cacheName
-                    if (Test-Path -LiteralPath $cacheDir) {
-                        $cacheLeft += @(Get-ChildItem -LiteralPath $cacheDir -Force -ErrorAction SilentlyContinue).Count
-                    }
-                }
-            }
-        }
+        # PERF-FIX #17: Removed the N+1 re-count + conditional second Clean pass + second Close-BrowserProcesses.
+        # The retry pattern called Get-ChildItem per profile per cache dir, then re-called Close-BrowserProcesses
+        # (20+ Get-Process calls) and re-ran the full Clear-ChromiumBrowserCache for any browser with leftover files.
+        # Any genuinely-locked files are already handled by Remove-DirectorySilent's reboot-delete fallback.
         $secs = [int]((Get-Date) - $started).TotalSeconds
-        & $Log "     done in ${secs}s; leftover cache entries: $cacheLeft"
+        & $Log "     done in ${secs}s"
     }
     foreach ($g in $geckoBrowsers) {
         $label = Get-GeckoBrowserLabel $g.Name
@@ -2320,16 +2288,16 @@ function Invoke-CleanMgrSilent {
     if (-not (Set-CleanMgrPreset -PresetId $PresetId -Log $Log)) { return $false }
 
     $targetDrive = if ($Drive) { $Drive.TrimEnd('\') } else { 'C:' }
-    & $Log "  [Disk Cleanup] running CleanMgr on $targetDrive with no selection prompts."
+    & $Log "  [Disk Cleanup] running CleanMgr on $targetDrive asynchronously (non-blocking)."
     try {
-        $proc = Start-Process -FilePath $cleanMgr -ArgumentList @('/d', $targetDrive, "/sagerun:$PresetId") `
-            -WindowStyle Hidden -PassThru -ErrorAction Stop
-        if (-not $proc.WaitForExit(1800000)) {
-            try { $proc.Kill() } catch {}
-            & $Log "  [Disk Cleanup] timed out after 30 minutes; continuing."
-            return $false
-        }
-        & $Log "  [Disk Cleanup] completed. Downloads categories were NOT selected."
+        # PERF-FIX #10: Run CleanMgr fire-and-forget instead of WaitForExit(1800000).
+        # CleanMgr was previously a hard 30-minute synchronous block — the single
+        # biggest elapsed-time bottleneck. It cleans files already handled earlier
+        # (INetCache, Temp), so letting it run in the background costs nothing.
+        Start-Process -FilePath $cleanMgr `
+            -ArgumentList @('/d', $targetDrive, "/sagerun:$PresetId") `
+            -WindowStyle Hidden -ErrorAction Stop | Out-Null
+        & $Log "  [Disk Cleanup] launched in background. Downloads categories were NOT selected."
         return $true
     } catch {
         & $Log "  [Disk Cleanup] skipped (CleanMgr could not start)."
@@ -2374,14 +2342,10 @@ function Invoke-MyCleanPCCore {
     Reset-ClosedAppLabels
     try {
     & $Log "-- STEP 1: AI App Caches & Browser Cleaning --"
-    $aiScript = Join-Path $PSScriptRoot "ai-cache-cleaner.ps1"
-    if (-not (Test-Path $aiScript)) {
-        $aiScript = "$env:LOCALAPPDATA\MyCleanPC\ai-cache-cleaner.ps1"
-    }
-    if (Test-Path $aiScript) {
-        & $Log "  [Running Shared Cleaner Engine: $aiScript]"
-        try { . $aiScript } catch { & $Log "  Cleaner script warning: $($_.Exception.Message)" }
-    }
+    # PERF-FIX #23: Removed ai-cache-cleaner.ps1 dot-source from here.
+    # The old code dot-sourced ai-cache-cleaner → Safe-Cleanup-Engine → Invoke-SafeWindows10Cleanup,
+    # which ran a full AI + browser clean pass, and THEN this function ran its own identical pass.
+    # Every AI cache and browser cache was being cleaned TWICE per run. Removed the duplicate.
     Close-AiToolProcesses -Log $Log
     Close-BrowserProcesses -Log $Log
     Show-MyCleanPCNotice -Title "My Clean PC is cleaning caches" -Body (Get-MyCleanPCBusyMessage) -Log $Log
@@ -2560,6 +2524,7 @@ function Invoke-MyCleanPCCore {
     & $Log "============================================"
     & $Log "THANKS CODEX FOR UR CLEAN PC"
     } finally {
+        Flush-TempCleanerLog   # PERF-FIX #15: flush any remaining buffered log lines
         Restore-ClosedApps -Log $Log
     }
     Show-MyCleanPCNotice -Title "You can use browsers and AI tools now" -Body (Get-MyCleanPCReadyMessage) -Log $Log

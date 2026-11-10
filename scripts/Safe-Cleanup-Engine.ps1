@@ -428,9 +428,11 @@ function Get-SafeCleanupTargets {
         $defaultDir = Join-Path $root "Default"
         if (Test-Path -LiteralPath $defaultDir) { $profiles += $defaultDir }
         
-        Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object {
-            $_.Name -like "Profile *"
-        } | ForEach-Object { $profiles += $_.FullName }
+        # PERF: .NET EnumerateDirectories for profile discovery — no pipeline
+        foreach ($profDir in [System.IO.Directory]::EnumerateDirectories($root)) {
+            $profName = [System.IO.Path]::GetFileName($profDir)
+            if ($profName -like "Profile *") { $profiles += $profDir }
+        }
 
         if ($profiles.Count -eq 0) {
             $profiles += $root
@@ -645,9 +647,6 @@ function Invoke-SafeDirectoryClean {
         return $result
     }
 
-    $isGenericTemp = ($Target.Category -like "*Windows User Temp*" -or $Target.Category -like "*Windows System Temp*")
-    $now = Get-Date
-
     try {
         # PERF-FIX #3: Use .NET EnumerateFiles (streaming, no pipeline overhead) instead of
         # Get-ChildItem -Recurse piped through Where-Object + Sort-Object scriptblock.
@@ -759,6 +758,10 @@ function Invoke-SafeWindows10Cleanup {
     if ([string]::IsNullOrWhiteSpace($LogFile)) {
         $LogFile = $script:EngineLogFile   # use the module-level log file path (PERF-FIX: was $script:LogFile which is undefined)
     }
+    # BUG-FIX: Update the module-level path so Write-EngineLog flushes to the
+    # caller-supplied file, not the path frozen at dot-source time.
+    $script:EngineLogFile  = $LogFile
+    $script:EngineLogBuffer.Clear()   # start fresh for this invocation
 
     Write-EngineLog "============================================================" "AUDIT"
     Write-EngineLog "   Safe, Evidence-Based Windows 10 Cache Cleaner Engine" "AUDIT"

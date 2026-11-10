@@ -17,10 +17,9 @@ $today      = Get-Date -Format "yyyy-MM-dd"
 # ── 1. Update the "Last updated" timestamp in creat.md ──────────────────────
 if (Test-Path $creatPath) {
     $content = Get-Content $creatPath -Raw
-    # Use single-quoted replacement target; build the replacement string separately
-    $replacement = "*Last updated: $now - hook will keep this current automatically.*"
-    $content = $content -replace '\*Last updated:.*\*', [regex]::Escape($replacement) -replace '\\(.)', '$1'
-    # Simpler: just do a clean string replace via -replace with literal substitution
+    # Replace the "Last updated" timestamp using a plain regex replace.
+    # [regex]::Replace is used so the replacement string is treated literally
+    # (no PowerShell -replace backreference expansion issues with dashes/slashes).
     $content = [regex]::Replace($content, '\*Last updated:[^*]*\*', "*Last updated: $now - hook will keep this current automatically.*")
     Set-Content -Path $creatPath -Value $content -Encoding UTF8 -NoNewline
 }

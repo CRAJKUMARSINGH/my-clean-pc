@@ -1197,7 +1197,8 @@ function Clear-SafeTempTree {
     # were nearly always no-ops because Stage 1 had already cleared everything unlocked.
     # They added 2–3 extra Get-ChildItem enumerations of the same tree for every temp root.
     param([string]$RootPath)
-    $root = [System.Environment]::ExpandEnvironmentVariables($RootPath)
+    # Accept both raw "%VAR%" strings and already-expanded paths without double-expanding.
+    $root = if ($RootPath -match '%') { [System.Environment]::ExpandEnvironmentVariables($RootPath) } else { $RootPath }
     if (-not (Test-Path $root)) { return 0 }
     $key = ([System.IO.Path]::GetFullPath($root)).TrimEnd('\').ToLowerInvariant()
     if ($script:ProcessedTempRoots.ContainsKey($key)) { return $script:ProcessedTempRoots[$key] }
@@ -1279,10 +1280,11 @@ function Clear-RigorousTempLocations {
         }
     }
     $local = [System.Environment]::ExpandEnvironmentVariables("%LOCALAPPDATA%")
-    Get-ChildItem $local -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    # PERF: .NET EnumerateDirectories instead of Get-ChildItem | ForEach-Object
+    foreach ($appDir in [System.IO.Directory]::EnumerateDirectories($local)) {
         foreach ($n in @("Temp", "temp", "tmp", "Tmp")) {
-            $tp = Join-Path $_.FullName $n
-            if (Test-Path $tp) {
+            $tp = [System.IO.Path]::Combine($appDir, $n)
+            if ([System.IO.Directory]::Exists($tp)) {
                 Clear-SafeTempTree $tp | Out-Null
                 & $OnItem $tp
             }
@@ -1669,9 +1671,7 @@ function Get-RunningBrowserLaunchCommands {
         $psProcs = @(Get-Process -Name $leaf -ErrorAction SilentlyContinue)
         if ($psProcs.Count -eq 0) { continue }
         # PERF-FIX #12: Use Get-Process first (fast kernel call). Only fall back to
-        # CimInstance if we need CommandLine (to extract --user-data-dir) and Get-Process
-        # has a path. Skip CimInstance entirely when not needed.
-        $gotCommandLine = $false
+        # CimInstance if we need CommandLine (to extract --user-data-dir).
         foreach ($p in $psProcs) {
             if (-not $p.Path) { continue }
             # Try to get CommandLine via WMI for this specific PID only (targeted, not full table scan)
@@ -1682,10 +1682,9 @@ function Get-RunningBrowserLaunchCommands {
             } catch {}
             if ($cmdLine) {
                 $parsed = Split-BrowserLaunchCommand $cmdLine
-                if ($parsed.Exe) { [void]$out.Add($parsed); $gotCommandLine = $true; break }
+                if ($parsed.Exe) { [void]$out.Add($parsed); break }
             }
             [void]$out.Add(@{ Exe = $p.Path; Args = '' })
-            $gotCommandLine = $true
             break
         }
     }
@@ -2225,12 +2224,12 @@ function Clear-AllInstalledBrowsers {
 function Clear-StoreAppTemp {
     $pkgs = [System.Environment]::ExpandEnvironmentVariables("%LOCALAPPDATA%\Packages")
     if (-not (Test-Path $pkgs)) { return }
-    Get-ChildItem $pkgs -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-        $at = Join-Path $_.FullName "AC\Temp"
-        $cn = Join-Path $_.FullName "AC\Microsoft\CryptnetUrlCache"
-        # FIX: use Remove-DirectorySilent - robocopy wipe, then cmd rd, then reboot-delete fallback
-        if (Test-Path $at) { Remove-DirectorySilent -LiteralPath $at | Out-Null }
-        if (Test-Path $cn) { Remove-DirectorySilent -LiteralPath $cn | Out-Null }
+    # PERF: .NET EnumerateDirectories instead of Get-ChildItem | ForEach-Object
+    foreach ($pkg in [System.IO.Directory]::EnumerateDirectories($pkgs)) {
+        $at = [System.IO.Path]::Combine($pkg, "AC\Temp")
+        $cn = [System.IO.Path]::Combine($pkg, "AC\Microsoft\CryptnetUrlCache")
+        if ([System.IO.Directory]::Exists($at)) { Remove-DirectorySilent -LiteralPath $at | Out-Null }
+        if ([System.IO.Directory]::Exists($cn)) { Remove-DirectorySilent -LiteralPath $cn | Out-Null }
     }
 }
 

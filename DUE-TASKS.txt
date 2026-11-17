@@ -1,0 +1,11 @@
+# DUE-TASKS - AI IDE Roaming Cache Paths to Clean
+# Status: COMPLETED - All paths integrated into Safe-Cleanup-Engine.ps1 (section H)
+#         and clean-pc-core.ps1 ($AiAppRootVars / $AiAppRootVars)
+#         Completed: 2026-11-03
+
+[DONE] C:\Users\Rajkumar.DESKTOP-4ISBKM0\AppData\Roaming\Antigravity IDE
+[DONE] C:\Users\Rajkumar.DESKTOP-4ISBKM0\AppData\Roaming\Cursor
+[DONE] C:\Users\Rajkumar.DESKTOP-4ISBKM0\AppData\Roaming\DEVIN
+[DONE] C:\Users\Rajkumar.DESKTOP-4ISBKM0\AppData\Roaming\TRAE
+[DONE] C:\Users\Rajkumar.DESKTOP-4ISBKM0\AppData\Roaming\WINDSURF
+[DONE] C:\Users\Rajkumar.DESKTOP-4ISBKM0\AppData\Roaming\KIRO

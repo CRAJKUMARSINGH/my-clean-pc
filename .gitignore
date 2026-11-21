@@ -18,6 +18,9 @@ scripts/cleanup_log.txt
 **/*_log.txt
 **/*.log
 
+# Binaries / installers
+*.exe
+
 # Dependencies
 node_modules/
 **/node_modules/
